@@ -1,0 +1,54 @@
+name: BOLL monitor and Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron uses UTC. These are 09:00, 11:40, 14:30 Asia/Shanghai.
+    - cron: "0 1 * * 1-5"
+    - cron: "40 3 * * 1-5"
+    - cron: "30 6 * * 1-5"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: boll-pages
+  cancel-in-progress: false
+
+jobs:
+  scan-push-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scan and send PushPlus message
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python push_report.py
+
+      - name: Build static dashboard
+        run: python build_pages.py
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

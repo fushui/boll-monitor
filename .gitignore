@@ -1,0 +1,15 @@
+.pushplus_token
+logs/
+__pycache__/
+*.pyc
+.env
+tmp/
+logs/
+docs/
+boll-cloud-deploy.zip
+output/*.csv
+!output/backtest_trades.csv
+!output/backtest_trades_upper.csv
+output/*.json
+!output/dashboard_data.json
+output/dashboard.html
