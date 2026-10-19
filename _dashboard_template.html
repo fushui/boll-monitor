@@ -236,6 +236,7 @@
               <th data-key="name">名称 <span class="arr">↕</span></th>
               <th data-key="code">代码 <span class="arr">↕</span></th>
               <th data-key="price">现价 <span class="arr">↕</span></th>
+              <th data-key="after_hours_price">盘后/暗盘 <span class="arr">↕</span></th>
               <th data-key="change_pct" class="sorted">涨跌幅 <span class="arr">↓</span></th>
               <th data-key="vol_ratio">量比 <span class="arr">↕</span></th>
               <th data-key="turnover">换手 <span class="arr">↕</span></th>
@@ -448,6 +449,7 @@ function renderQuoteTable(){
       '<td class="name">'+s.name+'</td>'+
       '<td class="code">'+s.code+'</td>'+
       '<td class="num">'+(s.price==null?'—':s.price.toFixed(2))+'</td>'+
+      '<td class="num">'+(s.after_hours_price==null?'—':s.after_hours_price.toFixed(2))+'</td>'+
       '<td class="num '+cls+'">'+sign+s.change_pct.toFixed(2)+'%</td>'+
       '<td class="num">'+(s.vol_ratio==null?'—':s.vol_ratio.toFixed(2))+'</td>'+
       '<td class="num">'+(s.turnover==null?'—':s.turnover.toFixed(2)+'%')+'</td>'+
@@ -488,38 +490,29 @@ function fetchTencentQuotes(codes){
   const symbols = MARKET==='us'
     ? codes.map(c=>'us'+String(c).toUpperCase())
     : codes.map(c=>String(c).toLowerCase().replace('.', ''));
-  return new Promise((resolve,reject)=>{
-    const tag = document.createElement('script');
-    const stamp = Date.now();
-    tag.src = 'https://qt.gtimg.cn/q=' + symbols.join(',') + '&_=' + stamp;
-    tag.async = true;
-    const timer = setTimeout(()=>{tag.remove(); reject(new Error('实时行情请求超时'))}, 12000);
-    tag.onload = ()=>{
-      clearTimeout(timer); tag.remove();
+  return fetch('https://qt.gtimg.cn/q='+symbols.join(',')+'&fmt=json&_='+Date.now(),{cache:'no-store'})
+    .then(r=>{if(!r.ok) throw new Error('腾讯实时行情请求失败'); return r.json()})
+    .then(payload=>{
       const out = {};
       symbols.forEach((symbol,i)=>{
-        const raw = window['v_' + symbol];
-        if(typeof raw !== 'string') return;
-        const v = raw.split('~');
-        if(v.length < (MARKET==='us' ? 35 : 53)) return;
+        const v = payload[symbol];
+        if(!Array.isArray(v) || v.length < (MARKET==='us' ? 35 : 53)) return;
         const price = Number(v[3]), prev = Number(v[4]);
         if(!Number.isFinite(price) || price<=0) return;
         const code = codes[i];
         out[code] = {
           price, change_pct:Number(v[32])||0, change_amount:Number(v[31])||0,
+          after_hours_price:(MARKET==='us' && Number(v[67])>0 ? Number(v[67]) : null),
           high:Number(v[33])||0, low:Number(v[34])||0, turnover:Number(v[38])||0,
           pe:Number(v[39])||null, amplitude:Number(v[43])||0,
           mcap_yi:Number(v[45])||0, pb:Number(v[46])||null,
           vol_ratio:Number(v[49])||0, quote_time:v[30]||'',
           stale:(Number(v[37])===0 && price===prev)
         };
-        try{ delete window['v_' + symbol]; }catch(_e){}
       });
-      if(Object.keys(out).length < Math.max(1, Math.floor(codes.length*0.8))) reject(new Error('实时行情返回不完整')); else resolve(out);
-    };
-    tag.onerror = ()=>{clearTimeout(timer); tag.remove(); reject(new Error('腾讯实时行情接口不可用'))};
-    document.head.appendChild(tag);
-  });
+      if(Object.keys(out).length < Math.max(1, Math.floor(codes.length*0.8))) throw new Error('实时行情返回不完整');
+      return out;
+    });
 }
 
 async function fetchUsQuotes(symbols){
@@ -539,6 +532,7 @@ function applyRealtimeQuotes(quotes){
   stocks.forEach(s=>{
     const q = map.get(String(s.code)); if(!q) return;
     Object.assign(s,{price:q.price,change_pct:q.change_pct,change_amount:q.change_amount,
+      after_hours_price:q.after_hours_price,
       high:q.high,low:q.low,turnover:q.turnover,pe:q.pe,amplitude:q.amplitude,
       mcap_yi:q.mcap_yi,pb:q.pb,vol_ratio:q.vol_ratio});
   });
