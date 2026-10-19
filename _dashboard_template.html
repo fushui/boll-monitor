@@ -485,7 +485,9 @@ const statusEl = document.getElementById('metaStatus');
 /* GitHub Pages 不能运行 Python 后端；这里用腾讯公开行情 JSONP 做盘中实时刷新。
    BOLL 下轨、RSI 等日线指标仍沿用最近一次完整扫描，避免把未收盘日线误作信号。 */
 function fetchTencentQuotes(codes){
-  const symbols = codes.map(c=>String(c).toLowerCase().replace('.', ''));
+  const symbols = MARKET==='us'
+    ? codes.map(c=>'us'+String(c).toUpperCase())
+    : codes.map(c=>String(c).toLowerCase().replace('.', ''));
   return new Promise((resolve,reject)=>{
     const tag = document.createElement('script');
     const stamp = Date.now();
@@ -499,6 +501,7 @@ function fetchTencentQuotes(codes){
         const raw = window['v_' + symbol];
         if(typeof raw !== 'string') return;
         const v = raw.split('~');
+        if(v.length < (MARKET==='us' ? 35 : 53)) return;
         const price = Number(v[3]), prev = Number(v[4]);
         if(!Number.isFinite(price) || price<=0) return;
         const code = codes[i];
@@ -562,7 +565,7 @@ btn.addEventListener('click', async ()=>{
     statusEl.textContent = '正在查询腾讯实时行情…';
     statusEl.style.color = 'var(--text-2)';
     try{
-      const quotes = MARKET==='us' ? await fetchUsQuotes(DATA.quote.stocks.map(s=>s.code)) : await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
+      const quotes = await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
       applyRealtimeQuotes(quotes); DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
       renderLive(); statusEl.textContent = '实时行情更新成功 · '+DATA.generated_at; statusEl.style.color='var(--down)';
     }catch(e){ statusEl.textContent='实时查询失败：'+e.message; statusEl.style.color='var(--up)'; }
