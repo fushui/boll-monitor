@@ -39,6 +39,22 @@ python -m boll_strategy quote --output output/realtime_quotes.csv
 盘中运行时，当日未收盘 K 线不会参与 BOLL 指标计算；实时价格只用于判断当前是否仍在下轨以下。
 如只需要盘后日线结果，可传入 `--no-realtime`。
 
+## 美股 BOLL 版本
+
+美股策略页面发布后访问：<https://fushui.github.io/boll-monitor/us/>。默认股票池在
+`data/us_stock_pool.csv`，每个美股交易日收盘后由 GitHub Actions 扫描、更新页面并通过 PushPlus 推送。
+手动扫描：
+
+```powershell
+python -m us_boll.scan --range 3y
+python -m us_boll.scan --range 3y --push
+python build_us_pages.py
+```
+
+计算规则复用本项目的 BOLL(20,2)、RSI(14)、严格收盘价低于下轨、`下轨 × 0.999` 限价、评分、T+1 限价成交回测、7%止损和10个交易日时间止损。卖出目标可在页面切换中轨或上轨。美股不设置A股式涨跌停约束。
+
+行情来自 Yahoo Finance 公共 Chart 接口（非官方、无可用性保证）；网页只展示日线扫描快照，不提供券商下单，也不是保证实时的报价服务。GitHub Actions 按美国常规交易时段收盘后运行，存在调度延迟；行情源不可用时，本次工作流会报错，不会用空数据覆盖页面。
+
 ## 每日筛选
 
 卖到中轨：

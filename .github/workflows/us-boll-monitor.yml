@@ -1,0 +1,58 @@
+name: U.S. BOLL monitor and Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 22:30 UTC is after the regular U.S. session close in both DST and standard time.
+    - cron: "30 22 * * 1-5"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: boll-pages
+  cancel-in-progress: false
+
+jobs:
+  scan-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scan U.S. stocks and send PushPlus report
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python -m us_boll.scan --range 3y --push
+
+      - name: Preserve the A-share dashboard
+        run: |
+          mkdir -p docs
+          curl --fail --location --retry 3 "https://fushui.github.io/boll-monitor/?run=${GITHUB_RUN_ID}" --output docs/index.html
+          python -c "from pathlib import Path; p=Path('docs/index.html'); s=p.read_text(encoding='utf-8'); marker='<div class=\"footer\">'; link='<div style=\"text-align:center;padding:0 12px 16px\"><a href=\"/boll-monitor/us/\" style=\"color:inherit\">美股 BOLL 版本 →</a></div>'; s=s if '/boll-monitor/us/' in s else s.replace(marker, link+marker, 1); p.write_text(s, encoding='utf-8')"
+
+      - name: Build U.S. dashboard
+        run: python build_us_pages.py
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

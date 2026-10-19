@@ -43,6 +43,11 @@ jobs:
       - name: Build static dashboard
         run: python build_pages.py
 
+      - name: Preserve the U.S. dashboard
+        run: |
+          mkdir -p docs/us
+          curl --fail --location --retry 3 "https://fushui.github.io/boll-monitor/us/?run=${GITHUB_RUN_ID}" --output docs/us/index.html
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
