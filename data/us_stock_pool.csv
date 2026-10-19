@@ -1,21 +1,10 @@
 symbol,name
-AAPL,Apple
-MSFT,Microsoft
-NVDA,NVIDIA
-AMZN,Amazon
-GOOGL,Alphabet A
-META,Meta Platforms
 TSLA,Tesla
-AVGO,Broadcom
-BRK-B,Berkshire Hathaway B
-JPM,JPMorgan Chase
-LLY,Eli Lilly
-WMT,Walmart
-V, Visa
-XOM,Exxon Mobil
-AMD,AMD
-NFLX,Netflix
-ORCL,Oracle
-COST,Costco
-KO,Coca-Cola
-PLTR,Palantir
+AAPL,Apple
+NVDA,NVIDIA
+META,Meta Platforms
+AMZN,Amazon
+MSFT,Microsoft
+GOOGL,Alphabet A
+SNDK,SanDisk
+MU,Micron Technology
