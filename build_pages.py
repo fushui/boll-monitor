@@ -105,7 +105,7 @@ def main() -> None:
     data = build_data()
     template = (ROOT / "_dashboard_template.html").read_text(encoding="utf-8")
     html = template.replace("__DASHBOARD_DATA__", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
-    html = html.replace("__STATIC_MODE__", "true")
+    html = html.replace("__STATIC_MODE__", "true").replace("__MARKET__", "cn")
     DOCS.mkdir(exist_ok=True)
     (DOCS / "index.html").write_text(html, encoding="utf-8")
     (DOCS / ".nojekyll").write_text("", encoding="utf-8")
