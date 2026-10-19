@@ -22,6 +22,9 @@ DEFAULT_POOL = ROOT / "data" / "us_stock_pool.csv"
 OUTPUT = ROOT / "us_boll" / "data" / "latest.json"
 NY = ZoneInfo("America/New_York")
 
+# 美股策略：收盘位置硬条件放宽到 10%（A 股 StrategyConfig 默认仍为 20%）。
+MIN_CLOSE_LOCATION = 0.1
+
 
 def load_pool(path: Path) -> list[dict[str, str]]:
     frame = pd.read_csv(path, dtype=str)
@@ -42,28 +45,79 @@ def _clean_number(value, digits=2):
     return round(float(value), digits)
 
 
-def _backtest_stats(frame: pd.DataFrame, exit_line: str) -> dict:
-    trades = backtest_one(frame, StrategyConfig(exit_line=exit_line))
+def _stats_from_trades(trades: pd.DataFrame) -> dict:
+    empty = {"trades": 0, "win_rate": 0, "avg": 0, "cum": 0,
+             "profit_avg": 0, "loss_avg": 0, "pl_ratio": None,
+             "holding": 0, "max_win": 0, "max_loss": 0, "exit": {}}
     if trades.empty:
-        return {"trades": 0, "win_rate": 0, "average_return": 0, "total_return": 0,
-                "profit_factor": None, "average_holding_days": 0}
+        return empty
     winners = trades.loc[trades["net_return"] > 0, "net_return"]
     losers = trades.loc[trades["net_return"] <= 0, "net_return"]
-    gross_profit = float(winners.sum())
-    gross_loss = abs(float(losers.sum()))
+    win_mean = float(winners.mean()) if not winners.empty else 0.0
+    loss_mean = float(losers.mean()) if not losers.empty else 0.0
     return {
         "trades": int(len(trades)),
         "win_rate": round(float((trades["net_return"] > 0).mean()) * 100, 1),
-        "average_return": round(float(trades["net_return"].mean()) * 100, 2),
-        "total_return": round(float(trades["net_return"].sum()) * 100, 2),
-        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else None,
-        "average_holding_days": round(float(trades["holding_days"].mean()), 1),
+        "avg": round(float(trades["net_return"].mean()) * 100, 2),
+        "cum": round(float(trades["net_return"].sum()) * 100, 2),
+        "profit_avg": round(win_mean * 100, 2),
+        "loss_avg": round(loss_mean * 100, 2),
+        "pl_ratio": round(abs(win_mean / loss_mean), 2) if loss_mean else None,
+        "holding": round(float(trades["holding_days"].mean()), 1),
+        "max_win": round(float(trades["net_return"].max()) * 100, 2),
+        "max_loss": round(float(trades["net_return"].min()) * 100, 2),
+        "exit": {k: int(v) for k, v in trades["exit_reason"].value_counts().items()},
     }
+
+
+def _build_monthly(mid_list: list[pd.DataFrame], up_list: list[pd.DataFrame]) -> list[dict]:
+    empty_frame = pd.DataFrame(columns=["exit_date", "net_return"])
+
+    def prepare(frames):
+        frame = pd.concat(frames, ignore_index=True) if frames else empty_frame
+        if frame.empty:
+            return None
+        data = frame.copy()
+        data["exit_date"] = pd.to_datetime(data["exit_date"])
+        data = data.sort_values("exit_date")
+        data["cum"] = data["net_return"].cumsum() * 100
+        return data.set_index("exit_date")
+
+    mid = prepare(mid_list)
+    up = prepare(up_list)
+    mc = mid["cum"].resample("ME").last() if mid is not None else pd.Series(dtype=float)
+    uc = up["cum"].resample("ME").last() if up is not None else pd.Series(dtype=float)
+    mr = mid["net_return"].resample("ME").sum() * 100 if mid is not None else pd.Series(dtype=float)
+    ur = up["net_return"].resample("ME").sum() * 100 if up is not None else pd.Series(dtype=float)
+
+    index = sorted(set(mc.index) | set(uc.index))
+
+    def _safe(series, stamp):
+        if stamp not in series.index:
+            return None
+        try:
+            value = float(series[stamp])
+            return round(value, 2) if np.isfinite(value) else None
+        except (TypeError, ValueError):
+            return None
+
+    monthly = []
+    for stamp in index:
+        monthly.append({
+            "month": stamp.strftime("%Y-%m"),
+            "cum_mid": _safe(mc, stamp),
+            "cum_up": _safe(uc, stamp),
+            "ret_mid": _safe(mr, stamp) if _safe(mr, stamp) is not None else 0.0,
+            "ret_up": _safe(ur, stamp) if _safe(ur, stamp) is not None else 0.0,
+        })
+    return monthly
 
 
 def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3y") -> dict:
     rows = []
     errors = []
+    all_mid_trades: list[pd.DataFrame] = []
+    all_up_trades: list[pd.DataFrame] = []
     for item in load_pool(pool_path):
         symbol = item["symbol"]
         try:
@@ -75,16 +129,22 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
                 history = history.iloc[:-1].copy()
             if len(history) < 40:
                 raise ValueError("有效日线少于 40 根")
-            cfg = StrategyConfig(exit_line="mid")
+            cfg = StrategyConfig(exit_line="mid", min_close_location=MIN_CLOSE_LOCATION)
             latest = evaluate_latest(history, cfg)
             indicators = add_indicators(history, cfg)
             candle = indicators.iloc[-1]
             raw_price = meta.get("regular_market_price") or float(candle["close"])
+            after_hours = meta.get("post_market_price")
+            after_hours = float(after_hours) if after_hours and np.isfinite(float(after_hours)) and float(after_hours) > 0 else None
             prior_close = float(history.iloc[-2]["close"]) if len(history) > 1 else None
             # chartPreviousClose is the close preceding the requested chart range,
             # not necessarily yesterday's close; use the prior returned daily bar.
             change = (raw_price / prior_close - 1) * 100 if prior_close else float(candle["daily_return"]) * 100
             below_lower = raw_price < float(candle["lower"])
+            mid_trades = backtest_one(history, StrategyConfig(exit_line="mid", min_close_location=MIN_CLOSE_LOCATION))
+            up_trades = backtest_one(history, StrategyConfig(exit_line="upper", min_close_location=MIN_CLOSE_LOCATION))
+            all_mid_trades.append(mid_trades)
+            all_up_trades.append(up_trades)
             item_result = {
                 "symbol": symbol,
                 "name": item["name"],
@@ -92,6 +152,7 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
                 "exchange": meta["exchange"],
                 "signal_date": latest["date"],
                 "price": _clean_number(raw_price),
+                "after_hours_price": _clean_number(after_hours),
                 "change_pct": _clean_number(change),
                 "close": _clean_number(latest["close"]),
                 "lower": _clean_number(latest["lower"]),
@@ -115,8 +176,8 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
                     for _, row in indicators.tail(100).iterrows() if pd.notna(row["lower"])
                 ],
                 "backtest": {
-                    "mid": _backtest_stats(history, "mid"),
-                    "upper": _backtest_stats(history, "upper"),
+                    "mid": _stats_from_trades(mid_trades),
+                    "upper": _stats_from_trades(up_trades),
                 },
             }
             rows.append(item_result)
@@ -125,17 +186,40 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
         time.sleep(0.25)
 
     rows.sort(key=lambda row: (-int(row["signal"]), -float(row["score"]), row["symbol"]))
+
+    near = []
+    for row in rows:
+        close = row.get("close")
+        lower = row.get("lower")
+        if close is None or not lower or float(lower) <= 0:
+            continue
+        dist = (float(close) - float(lower)) / float(lower) * 100
+        if 0 < dist <= 1.0:
+            near.append({
+                "symbol": row["symbol"], "name": row["name"],
+                "price": row.get("price"), "dist": round(dist, 2),
+                "rsi": row.get("rsi"), "below": bool(row.get("below_lower")),
+                "change_pct": row.get("change_pct"),
+            })
+    near.sort(key=lambda item: item["dist"])
+
     generated = datetime.now(timezone.utc).astimezone(NY).isoformat(timespec="minutes")
     result = {
         "generated_at": generated,
-        "provider": "Yahoo Finance public chart endpoint (unofficial)",
+        "provider": "Tencent ifzq public quote/kline endpoint (unofficial)",
         "strategy": {"boll_window": 20, "boll_std": 2, "rsi_window": 14,
                      "max_rsi": 45, "entry": "daily close < BOLL lower; limit = lower × 0.999",
                      "exits": ["mid", "upper"], "stop_loss_pct": 7, "max_holding_days": 10},
         "total": len(rows),
         "candidate_count": sum(row["signal"] for row in rows),
         "candidates": [row for row in rows if row["signal"]],
+        "near": near,
         "stocks": rows,
+        "backtest": {
+            "mid": _stats_from_trades(pd.concat(all_mid_trades, ignore_index=True) if all_mid_trades else pd.DataFrame()),
+            "upper": _stats_from_trades(pd.concat(all_up_trades, ignore_index=True) if all_up_trades else pd.DataFrame()),
+            "monthly": _build_monthly(all_mid_trades, all_up_trades),
+        },
         "errors": errors,
     }
     output.parent.mkdir(parents=True, exist_ok=True)

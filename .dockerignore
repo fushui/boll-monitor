@@ -1,0 +1,13 @@
+.git
+.gitignore
+.pushplus_token
+__pycache__/
+*.pyc
+logs/
+tmp/
+tests/
+output/pdf/
+output/*.csv
+output/*.json
+output/daily_scan_*
+output/realtime_quotes_*

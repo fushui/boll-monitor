@@ -13,3 +13,10 @@ output/*.csv
 output/*.json
 !output/dashboard_data.json
 output/dashboard.html
+
+# 本地数据与临时产物（不提交）
+.workbuddy/
+output/pdf/
+us_boll/data/
+us_boll/templates/
+mermaid-diagram.png
