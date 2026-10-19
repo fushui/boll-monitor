@@ -52,7 +52,15 @@
   .brand .sub{color:var(--text-3);font-size:12px;margin-top:2px}
   .header-right{display:flex;flex-direction:column;align-items:flex-end;gap:10px}
   .meta{text-align:right;color:var(--text-3);font-size:12px}
-  .meta .date{color:var(--text-2);font-size:13px}
+  .meta .date{color:var(--text-2);font-size:13px;display:flex;align-items:center;justify-content:flex-end;gap:8px}
+  #sessionBadge{
+    display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+    padding:2px 10px;border-radius:20px;line-height:1.6;
+  }
+  #sessionBadge.pre{background:rgba(59,130,246,.14);color:#60a5fa;border:1px solid rgba(59,130,246,.35)}
+  #sessionBadge.regular{background:rgba(240,185,11,.12);color:var(--gold);border:1px solid rgba(240,185,11,.3)}
+  #sessionBadge.after{background:rgba(139,92,246,.14);color:#a78bfa;border:1px solid rgba(139,92,246,.35)}
+  #sessionBadge.closed{background:rgba(139,148,167,.12);color:var(--text-2);border:1px solid var(--border)}
 
   .btn-refresh{
     background:var(--gold);color:#131722;border:none;border-radius:10px;
@@ -175,7 +183,8 @@
     </button>
     <div class="meta">
       <div class="date" id="metaDate"></div>
-      <div id="metaStatus">数据源：Yahoo Finance · 9 只股票池</div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;margin-top:3px"><span id="sessionBadge"></span></div>
+      <div id="metaStatus">数据源：腾讯 ifzq 美股行情 · 9 只股票池</div>
     </div>
   </div>
 </header>
@@ -236,6 +245,7 @@
               <th data-key="name">名称 <span class="arr">↕</span></th>
               <th data-key="code">代码 <span class="arr">↕</span></th>
               <th data-key="price">现价(USD) <span class="arr">↕</span></th>
+              <th data-key="pre_market_price">盘前价 <span class="arr">↕</span></th>
               <th data-key="after_hours_price">盘后价 <span class="arr">↕</span></th>
               <th data-key="change_pct" class="sorted">涨跌幅 <span class="arr">↓</span></th>
               <th data-key="rsi">RSI(14) <span class="arr">↕</span></th>
@@ -440,8 +450,19 @@ function renderQuoteTable(){
   const sorted = stocks.sort((a,b)=>{
     let x=a[sortKey], y=b[sortKey];
     if(typeof x==='string') return sortAsc ? x.localeCompare(y) : y.localeCompare(x);
+    x = (x==null)? -Infinity : x;
+    y = (y==null)? -Infinity : y;
     return sortAsc ? (x-y) : (y-x);
   });
+  function extCell(price, pct){
+    if(price==null) return '<td class="num" style="color:var(--text-3)">—</td>';
+    let sub = '';
+    if(pct!=null){
+      const cls = pct>=0?'up':'down', sign = pct>=0?'+':'';
+      sub = ' <span class="num" style="font-size:10.5px;color:var(--'+(pct>=0?'up':'down')+')">'+sign+pct.toFixed(2)+'%</span>';
+    }
+    return '<td class="num">'+price.toFixed(2)+sub+'</td>';
+  }
   document.getElementById('quoteBody').innerHTML = sorted.map(s=>{
     const cls = s.change_pct>=0?'up':'down';
     const sign = s.change_pct>=0?'+':'';
@@ -452,7 +473,8 @@ function renderQuoteTable(){
       '<td class="name">'+s.name+'</td>'+
       '<td class="code">'+s.code+'</td>'+
       '<td class="num">'+(s.price==null?'—':s.price.toFixed(2))+'</td>'+
-      '<td class="num">'+(s.after_hours_price==null?'—':s.after_hours_price.toFixed(2))+'</td>'+
+      extCell(s.pre_market_price, s.pre_market_pct)+
+      extCell(s.after_hours_price, s.after_hours_pct)+
       '<td class="num '+cls+'">'+sign+s.change_pct.toFixed(2)+'%</td>'+
       '<td class="num">'+(s.rsi==null?'—':s.rsi.toFixed(1))+'</td>'+
       '<td class="num">'+(s.vol_ratio==null?'—':s.vol_ratio.toFixed(2))+'</td>'+
@@ -466,10 +488,37 @@ function renderQuoteTable(){
 
 function renderLive(){
   document.getElementById('metaDate').textContent = '更新时间 ' + DATA.generated_at;
+  renderSession();
   renderKpi();
   renderDistChart();
   renderCandidates();
   renderQuoteTable();
+}
+
+/* 依据美东时间判断当前交易时段：盘前 4:00-9:30 / 盘中 9:30-16:00 / 盘后 16:00-20:00 / 其余休市 */
+function renderSession(){
+  const badge = document.getElementById('sessionBadge');
+  if(!badge) return;
+  try{
+    const parts = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date());
+    const get = t => { const p = parts.find(x=>x.type===t); return p?p.value:''; };
+    const wd = get('weekday');
+    const hh = parseInt(get('hour'),10), mm = parseInt(get('minute'),10);
+    const mins = hh*60 + mm;
+    const weekend = (wd==='Sat'||wd==='Sun');
+    let cls, txt;
+    if(weekend){ cls='closed'; txt='休市'; }
+    else if(mins < 240){ cls='closed'; txt='盘前未开（闭市）'; }
+    else if(mins < 570){ cls='pre'; txt='盘前交易'; }
+    else if(mins < 960){ cls='regular'; txt='盘中交易'; }
+    else if(mins < 1200){ cls='after'; txt='盘后交易'; }
+    else { cls='closed'; txt='已收盘'; }
+    badge.className = cls;
+    badge.textContent = txt;
+  }catch(e){
+    badge.className = 'closed';
+    badge.textContent = '美东时段';
+  }
 }
 
 /* ============ 绑定排序 + 实时刷新 ============ */
@@ -487,46 +536,53 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
 
-/* GitHub Pages 不能运行 Python 后端；这里用腾讯公开美股行情做盘中实时刷新。
-   仅更新价格/涨跌幅/盘后价，BOLL 下轨、RSI 等日线指标沿用最近一次完整扫描。
-   用 <script> 标签（JSONP 变量赋值模式）加载，规避部分预览环境的 CSP connect-src 限制。 */
-function fetchUsTencentQuotes(codes){
+/* GitHub Pages 不能运行 Python 后端；这里用腾讯 ifzq 公开美股接口做盘中/盘前/盘后实时刷新。
+   仅更新价格/涨跌幅/盘前价/盘后价，BOLL 下轨、RSI 等日线指标沿用最近一次完整扫描。
+   用 <script> 标签（JSONP `_var` 变量赋值模式）加载，规避部分预览环境的 CSP connect-src 限制。
+   注意：qt.gtimg.cn 的 ~ 分隔串里 qt[67] 是成交均价而非盘后价；盘前/盘后价须取 pandata 字段（tag=before/after）。 */
+const US_EXCHANGE_SUFFIX = {'NASDAQ':'.OQ','NYSE':'.N','AMEX':'.A'};
+
+function fetchUsIfzqQuote(item){
+  const code = String(item.code).toUpperCase();
+  const suffix = US_EXCHANGE_SUFFIX[item.exchange] || '.OQ';
+  const sym = 'us'+code+suffix;
+  const varname = '_usq'+code;
   return new Promise((resolve, reject)=>{
-    const symbols = codes.map(c=>'us'+String(c).toUpperCase());
-    const names = symbols.map(s=>'v_'+s);
     const script = document.createElement('script');
     let settled = false;
     const cleanup = ()=>{
       script.onload = script.onerror = null;
       if(script.parentNode) script.parentNode.removeChild(script);
-      names.forEach(n=>{ try{ delete window[n]; }catch(e){ window[n] = undefined; } });
+      try{ delete window[varname]; }catch(e){ window[varname] = undefined; }
     };
     const finish = (fn, val)=>{ if(settled) return; settled = true; clearTimeout(timer); cleanup(); fn(val); };
-    const timer = setTimeout(()=>finish(reject, new Error('实时行情请求超时')), 12000);
-    script.charset = 'GBK';
-    script.src = 'https://qt.gtimg.cn/q='+symbols.join(',')+'&_='+Date.now();
+    const timer = setTimeout(()=>finish(reject, new Error(code+' 超时')), 12000);
+    script.src = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+sym+',day,,,1,qfq&_var='+varname+'&_='+Date.now();
     script.onload = ()=>{
       try{
-        const out = {};
-        symbols.forEach((symbol,i)=>{
-          const raw = window['v_'+symbol];
-          if(typeof raw !== 'string') return;
-          const v = raw.split('~');
-          if(v.length < 36) return;
-          const price = Number(v[3]), prev = Number(v[4]);
-          if(!Number.isFinite(price) || price<=0) return;
-          const ah = Number(v[67]);
-          out[codes[i]] = {
-            price, change_pct:Number(v[32])||0, change_amount:Number(v[31])||0,
-            after_hours_price:(Number.isFinite(ah)&&ah>0?ah:null), quote_time:v[30]||'',
-            stale:false
-          };
-        });
-        if(Object.keys(out).length < Math.max(1, Math.floor(codes.length*0.8))) { finish(reject, new Error('实时行情返回不完整')); return; }
+        const raw = window[varname];
+        const node = raw && raw.data && raw.data[sym];
+        if(!node){ finish(reject, new Error(code+' 无数据')); return; }
+        const qt = (node.qt && node.qt[sym]) || [];
+        const pd = node.pandata || {};
+        const price = Number(qt[3]);
+        const out = {
+          price: (Number.isFinite(price)&&price>0)? price : null,
+          change_pct: Number(qt[32])||0, change_amount: Number(qt[31])||0,
+          pre_market_price:null, pre_market_pct:null,
+          after_hours_price:null, after_hours_pct:null, stale:false
+        };
+        const sessLast = Number(pd.last);
+        if(Number.isFinite(sessLast) && sessLast>0){
+          const tag = String(pd.tag||'').toLowerCase();
+          const pct = (Number.isFinite(Number(pd.pct)) && pd.pct!=='' && pd.pct!=null) ? Number(pd.pct) : null;
+          if(tag==='before'){ out.pre_market_price=sessLast; out.pre_market_pct=pct; }
+          else if(tag==='after'){ out.after_hours_price=sessLast; out.after_hours_pct=pct; }
+        }
         finish(resolve, out);
       }catch(e){ finish(reject, e); }
     };
-    script.onerror = ()=>finish(reject, new Error('腾讯美股行情请求失败'));
+    script.onerror = ()=>finish(reject, new Error(code+' 请求失败'));
     document.head.appendChild(script);
   });
 }
@@ -537,7 +593,8 @@ function applyRealtimeQuotes(quotes){
   stocks.forEach(s=>{
     const q = map.get(String(s.code)); if(!q) return;
     Object.assign(s,{price:q.price,change_pct:q.change_pct,change_amount:q.change_amount,
-      after_hours_price:q.after_hours_price});
+      pre_market_price:q.pre_market_price,pre_market_pct:q.pre_market_pct,
+      after_hours_price:q.after_hours_price,after_hours_pct:q.after_hours_pct});
   });
   stocks.sort((a,b)=>b.change_pct-a.change_pct);
   DATA.quote.up = stocks.filter(s=>s.change_pct>0).length;
@@ -558,14 +615,24 @@ btn.addEventListener('click', async ()=>{
   btn.classList.add('loading');
   btn.querySelector('.txt').textContent = '查询中…';
   btn.disabled = true;
-  statusEl.textContent = '正在查询腾讯美股行情…';
+  statusEl.textContent = '正在查询腾讯美股行情（含盘前盘后）…';
   statusEl.style.color = 'var(--text-2)';
   try{
-    const quotes = await fetchUsTencentQuotes(DATA.quote.stocks.map(s=>s.code));
+    const stocks = DATA.quote.stocks;
+    const results = await Promise.allSettled(stocks.map(s=>fetchUsIfzqQuote(s)));
+    const quotes = {};
+    let okCount = 0;
+    results.forEach((r,i)=>{
+      if(r.status==='fulfilled' && r.value && r.value.price){ quotes[stocks[i].code] = r.value; okCount++; }
+    });
+    if(okCount < Math.max(1, Math.floor(stocks.length*0.8))){
+      throw new Error('仅 '+okCount+'/'+stocks.length+' 只返回成功');
+    }
     applyRealtimeQuotes(quotes);
     DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
     renderLive();
-    statusEl.textContent = '实时行情更新成功 · '+DATA.generated_at;
+    renderSession();
+    statusEl.textContent = '实时行情更新成功（'+okCount+' 只）· '+DATA.generated_at;
     statusEl.style.color = 'var(--down)';
   }catch(e){
     statusEl.textContent = '实时查询失败：'+e.message;
@@ -580,7 +647,7 @@ btn.addEventListener('click', async ()=>{
 /* ============ 启动 ============ */
 if(STATIC_MODE){
   btn.querySelector('.txt').textContent = '实时查询';
-  statusEl.textContent = '点击按钮查询腾讯美股最新行情 · BOLL 日线信号来自最近扫描';
+  statusEl.textContent = '点击按钮查询腾讯美股最新行情（含盘前盘后）· BOLL 日线信号来自最近扫描';
 }
 renderBacktest();
 renderLive();

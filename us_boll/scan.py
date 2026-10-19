@@ -134,7 +134,9 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
             indicators = add_indicators(history, cfg)
             candle = indicators.iloc[-1]
             raw_price = meta.get("regular_market_price") or float(candle["close"])
-            after_hours = meta.get("post_market_price")
+            pre_market = meta.get("pre_market_price")
+            after_hours = meta.get("after_hours_price")
+            pre_market = float(pre_market) if pre_market and np.isfinite(float(pre_market)) and float(pre_market) > 0 else None
             after_hours = float(after_hours) if after_hours and np.isfinite(float(after_hours)) and float(after_hours) > 0 else None
             prior_close = float(history.iloc[-2]["close"]) if len(history) > 1 else None
             # chartPreviousClose is the close preceding the requested chart range,
@@ -152,7 +154,11 @@ def scan(pool_path: Path = DEFAULT_POOL, output: Path = OUTPUT, range_: str = "3
                 "exchange": meta["exchange"],
                 "signal_date": latest["date"],
                 "price": _clean_number(raw_price),
+                "pre_market_price": _clean_number(pre_market),
+                "pre_market_pct": _clean_number(meta.get("pre_market_pct")),
                 "after_hours_price": _clean_number(after_hours),
+                "after_hours_pct": _clean_number(meta.get("after_hours_pct")),
+                "session": meta.get("session"),
                 "change_pct": _clean_number(change),
                 "close": _clean_number(latest["close"]),
                 "lower": _clean_number(latest["lower"]),

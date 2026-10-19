@@ -79,16 +79,30 @@ def fetch_history(symbol: str, range_: str = "3y") -> tuple[pd.DataFrame, dict]:
     if frame.empty:
         raise ValueError(f"{symbol}: 无有效日线")
 
-    # 实时/盘前盘后行情来自同一响应的 qt / pandata 字段（qt 是 {code: [...]} 嵌套结构）
+    # 实时行情来自 qt（{code: [...]} 嵌套结构）；盘前/盘后行情来自 pandata。
+    # 注意：qt[67] 是「成交均价 = 成交额 / 成交量」，并非盘后价，勿误用。
     qt_node = data.get("qt") or {}
     qt = qt_node.get(tcode) if isinstance(qt_node, dict) else qt_node
     if not isinstance(qt, list):
         qt = []
     regular_price = _to_float(qt[3]) if len(qt) > 3 else None
     previous_close = _to_float(qt[4]) if len(qt) > 4 else None
-    after_hours = _to_float(qt[67]) if len(qt) > 67 else None
     quote_time = qt[30] if len(qt) > 30 else ""
+
+    # pandata 仅在盘前/盘后时段有值：tag="before"=盘前，tag="after"=盘后，
+    # 常规交易时段/休市时 tag 为空、last=-1。
     pandata = data.get("pandata") or {}
+    session_tag = str(pandata.get("tag", "") or "").strip().lower()
+    session_last = _to_float(pandata.get("last"))
+    session_pct = _to_float(pandata.get("pct"))
+    session_time = pandata.get("time", "") or ""
+    pre_market_price = pre_market_pct = pre_market_time = None
+    after_hours_price = after_hours_pct = after_hours_time = None
+    if session_last and session_last > 0:
+        if session_tag == "before":
+            pre_market_price, pre_market_pct, pre_market_time = session_last, session_pct, session_time
+        elif session_tag == "after":
+            after_hours_price, after_hours_pct, after_hours_time = session_last, session_pct, session_time
 
     meta_out = {
         "symbol": symbol.upper(),
@@ -96,8 +110,13 @@ def fetch_history(symbol: str, range_: str = "3y") -> tuple[pd.DataFrame, dict]:
         "exchange": _KNOWN_EXCHANGE.get(symbol.upper(), "NASDAQ"),
         "regular_market_price": regular_price,
         "previous_close": previous_close,
-        "post_market_price": after_hours if after_hours and after_hours > 0 else None,
-        "pre_market_price": _to_float(pandata.get("last")),
+        "pre_market_price": pre_market_price,
+        "pre_market_pct": pre_market_pct,
+        "pre_market_time": pre_market_time,
+        "after_hours_price": after_hours_price,
+        "after_hours_pct": after_hours_pct,
+        "after_hours_time": after_hours_time,
+        "session": session_tag,
         "quote_timestamp": quote_time,
         "market_timezone": "America/New_York",
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

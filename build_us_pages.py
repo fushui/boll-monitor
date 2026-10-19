@@ -28,8 +28,12 @@ def main() -> None:
     quote_stocks = [{
         "code": s["symbol"],
         "name": s.get("name", s["symbol"]),
+        "exchange": s.get("exchange", "NASDAQ"),
         "price": _num(s.get("price")),
+        "pre_market_price": _num(s.get("pre_market_price")),
+        "pre_market_pct": _num(s.get("pre_market_pct")),
         "after_hours_price": _num(s.get("after_hours_price")),
+        "after_hours_pct": _num(s.get("after_hours_pct")),
         "change_pct": _num(s.get("change_pct")) or 0.0,
         "rsi": _num(s.get("rsi"), 1),
         "vol_ratio": _num(s.get("volume_ratio")),
