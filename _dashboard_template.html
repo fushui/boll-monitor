@@ -257,6 +257,7 @@
 <script>
 const DATA = __DASHBOARD_DATA__;
 const STATIC_MODE = __STATIC_MODE__;
+const MARKET = '__MARKET__';
 
 const AXIS = '#5b6474', SPLIT = 'rgba(255,255,255,0.05)', TIP_BG = '#1a2130';
 function tooltipStyle(){
@@ -518,6 +519,17 @@ function fetchTencentQuotes(codes){
   });
 }
 
+async function fetchUsQuotes(symbols){
+  const rows = await Promise.all(symbols.map(async symbol=>{
+    const u='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(symbol)+'?range=1d&interval=1d&_='+Date.now();
+    const r=await fetch(u,{cache:'no-store'}); if(!r.ok) throw new Error('Yahoo 行情请求失败');
+    const d=await r.json(), m=d.chart?.result?.[0]?.meta||{}; const price=Number(m.regularMarketPrice||m.previousClose);
+    const prev=Number(m.chartPreviousClose||m.previousClose); if(!Number.isFinite(price)) throw new Error(symbol+' 无最新价格');
+    return [symbol,{price,change_pct:prev?((price/prev)-1)*100:0,change_amount:price-prev,stale:false}];
+  }));
+  return Object.fromEntries(rows);
+}
+
 function applyRealtimeQuotes(quotes){
   const map = new Map(Object.entries(quotes));
   const stocks = DATA.quote.stocks;
@@ -550,7 +562,7 @@ btn.addEventListener('click', async ()=>{
     statusEl.textContent = '正在查询腾讯实时行情…';
     statusEl.style.color = 'var(--text-2)';
     try{
-      const quotes = await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
+      const quotes = MARKET==='us' ? await fetchUsQuotes(DATA.quote.stocks.map(s=>s.code)) : await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
       applyRealtimeQuotes(quotes); DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
       renderLive(); statusEl.textContent = '实时行情更新成功 · '+DATA.generated_at; statusEl.style.color='var(--down)';
     }catch(e){ statusEl.textContent='实时查询失败：'+e.message; statusEl.style.color='var(--up)'; }
