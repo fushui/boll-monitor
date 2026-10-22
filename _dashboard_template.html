@@ -484,6 +484,16 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
 
+async function refreshUsSnapshot(silent=false){
+  if(MARKET!=='us') return;
+  try{
+    const r=await fetch('/boll-monitor/us/latest.json?ts='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('Yahoo 最新快照尚未发布');
+    const fresh=await r.json(); Object.assign(DATA,fresh); renderBacktest(); renderLive();
+    if(!silent){statusEl.textContent='Yahoo Finance 更新成功 · '+DATA.generated_at; statusEl.style.color='var(--down)';}
+  }catch(e){if(!silent){statusEl.textContent='Yahoo 查询失败：'+e.message;statusEl.style.color='var(--up)';}}
+}
+
 /* GitHub Pages 不能运行 Python 后端；这里用腾讯公开行情 JSONP 做盘中实时刷新。
    BOLL 下轨、RSI 等日线指标仍沿用最近一次完整扫描，避免把未收盘日线误作信号。 */
 function fetchTencentQuotes(codes){
@@ -560,9 +570,7 @@ btn.addEventListener('click', async ()=>{
     statusEl.style.color = 'var(--text-2)';
     try{
       if(MARKET==='us'){
-        const r = await fetch('/boll-monitor/us/latest.json?ts='+Date.now(),{cache:'no-store'});
-        if(!r.ok) throw new Error('Yahoo 最新快照尚未发布');
-        const fresh = await r.json(); Object.assign(DATA,fresh);
+        await refreshUsSnapshot();
       }else{
         const quotes = await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
         applyRealtimeQuotes(quotes); DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
@@ -605,6 +613,7 @@ if(STATIC_MODE){
 }
 renderBacktest();
 renderLive();
+if(MARKET==='us') refreshUsSnapshot(true);
 </script>
 </body>
 </html>
