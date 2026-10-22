@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -182,7 +183,41 @@ class AStockDataProvider:
         missing = [code for code in codes if code not in result]
         if missing:
             raise RuntimeError(f"腾讯实时行情缺失 {len(missing)} 只: {', '.join(missing[:5])}")
+        # 东财分红明细用于计算近12个月股息率；行情主源不可用时不影响实时行情返回。
+        try:
+            yields = self._dividend_yields(codes, result)
+            for code, value in yields.items():
+                result[code]["realtime_dividend_yield"] = value
+        except Exception:
+            pass
         return result
+
+    def _dividend_yields(self, codes: list[str], quotes: dict[str, dict]) -> dict[str, float | None]:
+        """东财分红明细：近12个月税前现金分红/当前价，返回百分比。"""
+        raw_codes = [re.search(r"(\d{6})$", str(c)).group(1) for c in codes]
+        q = chr(34)
+        code_filter = "(SECURITY_CODE in (" + ",".join(q + c + q for c in raw_codes) + "))"
+        params = {"reportName": "RPT_SHAREBONUS_DET", "columns": "SECURITY_CODE,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE", "filter": code_filter, "pageNumber": "1", "pageSize": "500", "sortColumns": "EX_DIVIDEND_DATE", "sortTypes": "-1", "source": "WEB", "client": "WEB"}
+        response = self.session.get("https://datacenter.eastmoney.com/securities/api/data/v1/get", params=params, timeout=self.timeout)
+        response.raise_for_status()
+        rows = (response.json().get("result") or {}).get("data") or []
+        cutoff = date.today() - timedelta(days=366)
+        totals = {c: 0.0 for c in raw_codes}
+        for row in rows:
+            try:
+                code = str(row.get("SECURITY_CODE", ""))
+                ex_date = date.fromisoformat(str(row.get("EX_DIVIDEND_DATE", ""))[:10])
+                if code in totals and ex_date >= cutoff:
+                    # 东财该字段按“每10股派息”披露。
+                    totals[code] += float(row.get("PRETAX_BONUS_RMB") or 0) / 10.0
+            except (TypeError, ValueError):
+                continue
+        out = {}
+        for code in codes:
+            raw = re.search(r"(\d{6})$", str(code)).group(1)
+            price = float(quotes[code].get("realtime_price") or 0)
+            out[code] = round(totals[raw] / price * 100, 2) if price > 0 and totals[raw] > 0 else None
+        return out
 
     def _wait_for_rate_limit(self) -> None:
         remaining = self.interval - (time.monotonic() - self._last_request_at)
@@ -267,23 +302,83 @@ class AStockDataProvider:
         if start_date > end_date:
             raise ValueError(f"开始日期晚于结束日期: {start} > {end}")
 
-        rows = []
-        chunk_start = start_date
-        while chunk_start <= end_date:
-            chunk_end = min(end_date, chunk_start + timedelta(days=self.MAX_CALENDAR_DAYS_PER_REQUEST - 1))
-            data = self._request(symbol, chunk_start, chunk_end)
-            rows.extend(self._rows_from_payload(data, symbol, chunk_start, chunk_end))
-            chunk_start = chunk_end + timedelta(days=1)
+        # 主源：腾讯前复权日线；被 WAF 风控（501）时回退到新浪 K 线。
+        try:
+            rows = []
+            chunk_start = start_date
+            while chunk_start <= end_date:
+                chunk_end = min(end_date, chunk_start + timedelta(days=self.MAX_CALENDAR_DAYS_PER_REQUEST - 1))
+                data = self._request(symbol, chunk_start, chunk_end)
+                rows.extend(self._rows_from_payload(data, symbol, chunk_start, chunk_end))
+                chunk_start = chunk_end + timedelta(days=1)
+            result = pd.DataFrame(rows, columns=OHLCV_COLUMNS)
+            if result.empty:
+                return result
+        except Exception:
+            return self._history_sina(symbol, start_date, end_date)
 
-        result = pd.DataFrame(rows, columns=OHLCV_COLUMNS)
-        if result.empty:
-            return result
         result["date"] = pd.to_datetime(result["date"])
         result = result.sort_values("date").reset_index(drop=True)
         if result["date"].duplicated().any():
             duplicate = result.loc[result["date"].duplicated(), "date"].iloc[0].date()
             raise RuntimeError(f"腾讯 K 线日期重复: {code} {duplicate}")
         return result
+
+    def _history_sina(self, symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
+        """新浪 K 线备用源（腾讯 ifzq 被 WAF 风控时使用，scale=240 为日线）。"""
+        days = (end_date - start_date).days
+        datalen = min(1023, max(60, int(days * 0.75) + 30))
+        url = "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_k=/CN_MarketDataService.getKLineData"
+        try:
+            response = self.session.get(
+                url,
+                params={"symbol": symbol, "scale": "240", "ma": "no", "datalen": datalen},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            text = re.sub(r"/\*.*?\*/", "", response.text, flags=re.S)
+            # 新浪 JSONP 实际为 `var _k=([{...}])`，等号后先有括号再是数组；
+            # 数组是响应中唯一的 `[...]`，直接整体提取即可。
+            match = re.search(r"\[.*\]", text, re.S)
+            if not match:
+                raise RuntimeError("新浪 K 线响应无法解析")
+            payload = json.loads(match.group(0))
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            raise RuntimeError(f"新浪 K 线请求失败（{symbol}）: {exc}") from exc
+
+        rows = []
+        for item in payload:
+            try:
+                bar_date = date.fromisoformat(str(item.get("day", ""))[:10])
+            except ValueError:
+                continue
+            if not (start_date <= bar_date <= end_date):
+                continue
+            try:
+                open_, close, high, low, volume = map(
+                    float, (item["open"], item["close"], item["high"], item["low"], item["volume"])
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(v) for v in (open_, high, low, close, volume)):
+                continue
+            if min(open_, high, low, close) <= 0 or volume < 0:
+                continue
+            rows.append({
+                "date": bar_date.isoformat(),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            })
+
+        frame = pd.DataFrame(rows, columns=OHLCV_COLUMNS)
+        if frame.empty:
+            raise RuntimeError(f"新浪 K 线无有效数据: {symbol}")
+        frame["date"] = pd.to_datetime(frame["date"])
+        frame = frame.sort_values("date").drop_duplicates("date").reset_index(drop=True)
+        return frame
 
     def close(self) -> None:
         self.session.close()

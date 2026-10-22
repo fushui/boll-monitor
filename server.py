@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 import json
+import csv
+import html as html_escape
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -24,6 +27,9 @@ from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote
+
+import requests
 
 from boll_strategy.cli import _drop_incomplete_today, _merge_realtime
 from boll_strategy.providers import AStockDataProvider
@@ -32,10 +38,70 @@ from boll_strategy.universe import load_universe
 
 ROOT = Path(__file__).resolve().parent
 DASHBOARD = ROOT / "output" / "dashboard.html"
+ETF_DASHBOARD = ROOT / "output" / "etf" / "dashboard.html"
+US_DASHBOARD = ROOT / "docs" / "us" / "index.html"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8765"))
 
 _lock = threading.Lock()
+
+
+def _resolve_stock_input(value: str) -> tuple[str, str]:
+    """Resolve A-share code or Chinese name through Tencent Smartbox."""
+    value = value.strip()
+    match = re.fullmatch(r"(?:(SH|SZ)\.)?(\d{6})", value.upper())
+    if match:
+        market, digits = match.groups()
+        if not market:
+            if digits.startswith(("6", "9")):
+                market = "SH"
+            elif digits.startswith(("0", "2", "3")):
+                market = "SZ"
+            else:
+                raise ValueError("暂不支持该市场代码，请使用 SH.600519 或 SZ.000001 格式")
+        code = f"{market}.{digits}"
+        name = _tencent_stock_name(code)
+        return code, name
+
+    response = requests.get(
+        "https://smartbox.gtimg.cn/s3/",
+        params={"q": value, "t": "all"},
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+        timeout=12,
+    )
+    response.raise_for_status()
+    hint = re.search(r'v_hint="([^"]*)"', response.content.decode("gbk", errors="replace"))
+    if not hint:
+        raise ValueError(f"没有找到股票：{value}")
+    records = []
+    for item in json.loads('"' + hint.group(1) + '"').split("^"):
+        parts = item.split("~")
+        if len(parts) >= 5 and parts[0] in ("sh", "sz") and parts[1].isdigit() and len(parts[1]) == 6 and parts[4].startswith("GP"):
+            records.append((parts[0].upper() + "." + parts[1], parts[2]))
+    if not records:
+        raise ValueError(f"没有找到沪深 A 股：{value}")
+    exact = [item for item in records if item[1].casefold() == value.casefold()]
+    matches = exact or records
+    unique = list(dict.fromkeys(matches))
+    if len(unique) != 1:
+        options = "、".join(f"{name}({code})" for code, name in unique[:5])
+        raise ValueError(f"名称匹配到多只股票，请输入代码。匹配结果：{options}")
+    return unique[0]
+
+
+def _tencent_stock_name(code: str) -> str:
+    market, digits = code.lower().split(".", 1)
+    response = requests.get(
+        f"https://qt.gtimg.cn/q={market}{digits}",
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    match = re.search(r'="([^"]*)"', response.content.decode("gbk", errors="replace"))
+    fields = match.group(1).split("~") if match else []
+    if len(fields) < 4 or fields[3] in ("", "0"):
+        raise ValueError(f"腾讯行情中找不到有效股票：{code}")
+    return fields[1]
 
 
 def _num(value) -> float:
@@ -58,6 +124,7 @@ def _build_stock(row: dict) -> dict:
         "vol_ratio": round(_num(row.get("realtime_volume_ratio")), 2),
         "pe": round(pe, 2) if pe else None,
         "pb": round(pb, 2) if pb else None,
+        "dividend_yield": round(_num(row.get("realtime_dividend_yield")), 2) if row.get("realtime_dividend_yield") is not None else None,
         "high": round(_num(row.get("realtime_high")), 2),
         "low": round(_num(row.get("realtime_low")), 2),
         "amplitude": round(_num(row.get("realtime_amplitude_pct")), 2),
@@ -122,6 +189,7 @@ def _run_scan(exit_line: str) -> dict:
             "sell_target": round(_num(r.get("selected_sell_target")), 2),
             "realtime_price": round(_num(r.get("realtime_price")), 2),
             "change_pct": round(_num(r.get("realtime_change_pct")), 2),
+            "dividend_yield": round(_num(r.get("realtime_dividend_yield")), 2) if r.get("realtime_dividend_yield") is not None else None,
             "below_lower": bool(r.get("realtime_below_lower")),
             "at_or_below_buy": bool(r.get("realtime_at_or_below_buy_limit")),
             "penetration": round(_num(r.get("lower_penetration")) * 100, 2),
@@ -152,6 +220,19 @@ def _run_scan(exit_line: str) -> dict:
 
     stocks = [_build_stock(r) for r in results]
     stocks.sort(key=lambda x: -x["change_pct"])
+
+    # 全部股票都失败时，绝不返回空列表（否则前端会把股票池列表清空），
+    # 而是返回明确错误，让前端保留旧列表并提示查询失败。
+    if not results:
+        first = errors[0] if errors else {"code": "UNKNOWN", "error": "未知错误"}
+        return {
+            "ok": False,
+            "error": f"行情源不可用：全部 {len(codes)} 只股票查询失败"
+                     f"（首例 {first.get('code')} {first.get('error')}）",
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "elapsed": elapsed,
+            "errors": len(errors),
+        }
 
     return {
         "ok": True,
@@ -222,6 +303,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/pool":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                action = body.get("action")
+                value = str(body.get("input", body.get("code", ""))).strip()
+                pool_path = ROOT / "data" / "stock_pool.csv"
+                pool = load_universe(pool_path)
+                if action == "add":
+                    if not value:
+                        raise ValueError("请输入股票名称或代码")
+                    code, name = _resolve_stock_input(value)
+                    if code not in set(pool["code"]):
+                        pool = __import__("pandas").concat([pool, __import__("pandas").DataFrame([{"code": code, "name": name}])], ignore_index=True)
+                    else:
+                        raise ValueError(f"{name}（{code}）已在股票池中")
+                elif action == "remove":
+                    code = value.strip().upper()
+                    pool = pool[pool["code"] != code].copy()
+                    if pool.empty: raise ValueError("股票池不能全部删除")
+                else:
+                    raise ValueError("action 必须是 add 或 remove")
+                pool.to_csv(pool_path, index=False, encoding="utf-8-sig")
+                self._send_json({"ok": True, "action": action, "total": len(pool), "stocks": pool.to_dict("records")})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
         if path != "/api/scheduled-push":
             self._send_json({"ok": False, "error": "未知路径 " + path}, status=404)
             return
@@ -261,6 +369,48 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(DASHBOARD)
             else:
                 self._send_json({"ok": False, "error": "dashboard.html 不存在，请先运行生成脚本"})
+            return
+
+        if path in ("/us", "/us/"):
+            if US_DASHBOARD.exists():
+                self._send_html(US_DASHBOARD)
+            else:
+                self._send_json({"ok": False, "error": "美股 dashboard 不存在"})
+            return
+
+        if path in ("/etf", "/etf/"):
+            if ETF_DASHBOARD.exists():
+                self._send_html(ETF_DASHBOARD)
+            else:
+                template = (ROOT / "_etf_momentum_template.html").read_text(encoding="utf-8")
+                empty = {"action": "UNAVAILABLE", "reason": "尚无行情数据，点击重新查询扫描股票池", "ranked": [], "errors": [], "backtest": {"available": False}}
+                with (ROOT / "data" / "etf_pool.csv").open(encoding="utf-8-sig", newline="") as file:
+                    options = "".join(
+                        f'<option value="{html_escape.escape(row["code"], quote=True)}">{html_escape.escape(row["name"])} {html_escape.escape(row["code"])}</option>'
+                        for row in csv.DictReader(file)
+                    )
+                template = template.replace("__ETF_OPTIONS__", options)
+                html = template.replace("__ETF_DATA__", json.dumps(empty, ensure_ascii=False)).replace("__STATIC_MODE__", "false")
+                body = html.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            return
+
+        if path == "/api/etf":
+            if not self._acquire():
+                self._send_json({"ok": False, "error": "已有查询进行中，请稍候重试"}, status=429)
+                return
+            try:
+                from etf_momentum.scan import run_scan
+                held_code = (query.get("held", [""])[0] or "").strip().upper() or None
+                self._send_json(run_scan(held_code=held_code))
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=502)
+            finally:
+                _lock.release()
             return
 
         if path == "/api/scan":

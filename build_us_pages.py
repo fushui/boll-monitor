@@ -94,6 +94,7 @@ def main() -> None:
             .replace("__MARKET__", "us"))
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     TARGET.write_text(page, encoding="utf-8")
+    (TARGET.parent / "latest.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     (TARGET.parent / ".nojekyll").write_text("", encoding="utf-8")
     print(f"US Pages built: {TARGET}")
 

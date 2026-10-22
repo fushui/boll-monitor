@@ -40,6 +40,9 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: python push_report.py
 
+      - name: Run ETF momentum rotation scan
+        run: python -m etf_momentum.scan
+
       - name: Build static dashboard
         run: python build_pages.py
 

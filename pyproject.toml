@@ -18,9 +18,10 @@ test = ["pytest>=8.0"]
 
 [project.scripts]
 boll-strategy = "boll_strategy.cli:main"
+etf-momentum-scan = "etf_momentum.scan:main"
 
 [tool.setuptools.packages.find]
-include = ["boll_strategy*"]
+include = ["boll_strategy*", "etf_momentum*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

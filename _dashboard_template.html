@@ -6,6 +6,8 @@
 <title>BOLL 策略监控台</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 <style>
+.pool-spinner{display:inline-block;width:12px;height:12px;margin-right:6px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:pool-spin .7s linear infinite}
+@keyframes pool-spin{to{transform:rotate(360deg)}}
   :root{
     --bg:#0b0e14;
     --bg-2:#0e1219;
@@ -168,6 +170,7 @@
     </div>
   </div>
   <div class="header-right">
+    <a href="etf/" style="color:var(--accent);text-decoration:none;font-size:13px">ETF 动量轮动 ↗</a>
     <button class="btn-refresh" id="refreshBtn">
       <span class="spinner"></span>
       <span class="ic">⟳</span>
@@ -227,8 +230,13 @@
 
   <section class="grid">
     <div class="card span-12">
-      <h2>今日行情</h2>
-      <div class="desc">点击表头排序 · 共 <span id="quoteCount"></span> 只</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div><h2>今日行情</h2><div class="desc">点击表头排序 · 共 <span id="quoteCount"></span> 只</div></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="poolInput" type="text" placeholder="输入股票代码或名称" style="background:var(--card-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;width:200px">
+          <button class="btn-refresh" id="addStockBtn" style="padding:8px 12px">确定新增</button>
+        </div>
+      </div>
       <div style="overflow-x:auto">
         <table id="quoteTable">
           <thead>
@@ -242,8 +250,10 @@
               <th data-key="turnover">换手 <span class="arr">↕</span></th>
               <th data-key="pe">PE(TTM) <span class="arr">↕</span></th>
               <th data-key="pb">PB <span class="arr">↕</span></th>
+              <th data-key="dividend_yield">股息率 <span class="arr">↕</span></th>
               <th data-key="amplitude">振幅 <span class="arr">↕</span></th>
               <th data-key="mcap_yi">总市值(亿) <span class="arr">↕</span></th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="quoteBody"></tbody>
@@ -259,6 +269,13 @@
 const DATA = __DASHBOARD_DATA__;
 const STATIC_MODE = __STATIC_MODE__;
 const MARKET = '__MARKET__';
+
+// WorkBuddy 分享链接以 sharecode 鉴权，后端 API 请求须携带该参数（否则 403「链接不完整」）
+function withShare(path){
+  const m = location.search.match(/[?&]sharecode=([^&#]+)/);
+  if(!m) return path;
+  return path + (path.includes('?') ? '&' : '?') + 'sharecode=' + encodeURIComponent(m[1]);
+}
 
 const AXIS = '#5b6474', SPLIT = 'rgba(255,255,255,0.05)', TIP_BG = '#1a2130';
 function tooltipStyle(){
@@ -402,6 +419,7 @@ function renderCandidates(){
         row('买入限价', c.buy_limit.toFixed(2))+
         row('卖出目标(中轨)', c.sell_target.toFixed(2))+
         row('RSI(14)', c.rsi.toFixed(1))+
+        row('股息率', c.dividend_yield==null?'—':c.dividend_yield.toFixed(2)+'%')+
       '</div>'+
       '<div class="cand-rows" style="border-top:1px solid var(--border-soft);padding-top:10px">'+
         row('实时价', c.realtime_price.toFixed(2))+
@@ -455,10 +473,13 @@ function renderQuoteTable(){
       '<td class="num">'+(s.turnover==null?'—':s.turnover.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.pe==null?'—':s.pe.toFixed(1))+'</td>'+
       '<td class="num">'+(s.pb==null?'—':s.pb.toFixed(2))+'</td>'+
+      '<td class="num">'+(s.dividend_yield==null?'—':s.dividend_yield.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.amplitude==null?'—':s.amplitude.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.mcap_yi==null?'—':s.mcap_yi)+'</td>'+
+      '<td><button class="remove-stock" data-code="'+s.code+'" style="background:transparent;color:var(--down);border:1px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer">删除</button></td>'+
     '</tr>';
   }).join('');
+  document.querySelectorAll('.remove-stock').forEach(button=>button.addEventListener('click',()=>changePool('remove',button.dataset.code,button)));
 }
 
 function renderLive(){
@@ -483,6 +504,59 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
+const poolInput=document.getElementById('poolInput');
+const addStockBtn=document.getElementById('addStockBtn');
+if(STATIC_MODE){poolInput.disabled=true;addStockBtn.disabled=true;poolInput.placeholder='云端静态页请在项目股票池文件中修改';}
+let poolBusy=false;
+function setPoolLoading(loading,action,trigger){
+  poolBusy=loading;
+  addStockBtn.disabled=loading||STATIC_MODE;
+  poolInput.disabled=loading||STATIC_MODE;
+  document.querySelectorAll('.remove-stock').forEach(button=>button.disabled=loading);
+  if(loading&&trigger){
+    trigger.dataset.originalText=trigger.textContent;
+    trigger.innerHTML='<span class="pool-spinner" aria-hidden="true"></span>处理中…';
+    trigger.disabled=true;
+  }else if(trigger){
+    trigger.textContent=trigger.dataset.originalText||(action==='add'?'确定新增':'删除');
+    delete trigger.dataset.originalText;
+    trigger.disabled=false;
+  }
+}
+async function changePool(action,value,trigger=addStockBtn){
+  if(STATIC_MODE){statusEl.textContent='云端静态页面不能保存股票池修改，请在项目 data/stock_pool.csv 中编辑。';statusEl.style.color='var(--up)';return;}
+  if(poolBusy)return;
+  if(action==='remove'&&!confirm('从股票池删除 '+value+'？')) return;
+  setPoolLoading(true,action,trigger);statusEl.textContent=action==='add'?'正在新增并刷新股票数据…':'正在删除并刷新股票数据…';statusEl.style.color='var(--text-2)';
+  try{
+    const r=await fetch(withShare('/api/pool'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,input:value})});
+    const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'股票池更新失败');
+    const scan=await fetch(withShare('/api/scan?exit=mid'),{cache:'no-store'});const live=await scan.json();
+    if(scan.ok&&live.ok&&live.quote?.total){
+      DATA.quote=live.quote;DATA.candidates=live.candidates;DATA.near=live.near||[];DATA.generated_at=live.generated_at;
+      statusEl.textContent='股票池已更新（'+d.total+' 只）· 行情与信号刷新完成 '+live.generated_at;statusEl.style.color='var(--down)';
+    }else{
+      const qr=await fetch(withShare('/api/quote'),{cache:'no-store'});const q=await qr.json();if(!qr.ok||!q.ok||!q.quote?.total)throw new Error('股票池已保存，但行情源暂不可用');
+      const active=new Set(q.quote.stocks.map(s=>s.code));DATA.quote=q.quote;DATA.candidates=DATA.candidates.filter(c=>active.has(c.code));DATA.near=(DATA.near||[]).filter(n=>active.has(n.code));DATA.generated_at=q.generated_at;
+      statusEl.textContent='股票池已更新（'+d.total+' 只）· 行情已刷新，部分日线信号暂不可用';statusEl.style.color='var(--down)';
+    }
+    renderLive();
+    if(action==='add')poolInput.value='';
+  }catch(e){statusEl.textContent='操作失败：'+e.message;statusEl.style.color='var(--up)';}
+  finally{setPoolLoading(false,action,trigger);}
+}
+addStockBtn.addEventListener('click',()=>{const value=poolInput.value.trim();if(value)changePool('add',value);});
+poolInput.addEventListener('keydown',e=>{if(e.key==='Enter')addStockBtn.click();});
+
+async function refreshUsSnapshot(silent=false){
+  if(MARKET!=='us') return;
+  try{
+    const r=await fetch('/boll-monitor/us/latest.json?ts='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('Yahoo 最新快照尚未发布');
+    const fresh=await r.json(); Object.assign(DATA,fresh); renderBacktest(); renderLive();
+    if(!silent){statusEl.textContent='Yahoo Finance 更新成功 · '+DATA.generated_at; statusEl.style.color='var(--down)';}
+  }catch(e){if(!silent){statusEl.textContent='Yahoo 查询失败：'+e.message;statusEl.style.color='var(--up)';}}
+}
 
 /* GitHub Pages 不能运行 Python 后端；这里用腾讯公开行情 JSONP 做盘中实时刷新。
    BOLL 下轨、RSI 等日线指标仍沿用最近一次完整扫描，避免把未收盘日线误作信号。 */
@@ -556,11 +630,15 @@ btn.addEventListener('click', async ()=>{
     btn.classList.add('loading');
     btn.querySelector('.txt').textContent = '查询中…';
     btn.disabled = true;
-    statusEl.textContent = '正在查询腾讯实时行情…';
+    statusEl.textContent = MARKET==='us' ? '正在读取 Yahoo Finance 最新快照…' : '正在查询腾讯实时行情…';
     statusEl.style.color = 'var(--text-2)';
     try{
-      const quotes = await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
-      applyRealtimeQuotes(quotes); DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
+      if(MARKET==='us'){
+        await refreshUsSnapshot();
+      }else{
+        const quotes = await fetchTencentQuotes(DATA.quote.stocks.map(s=>s.code));
+        applyRealtimeQuotes(quotes); DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
+      }
       renderLive(); statusEl.textContent = '实时行情更新成功 · '+DATA.generated_at; statusEl.style.color='var(--down)';
     }catch(e){ statusEl.textContent='实时查询失败：'+e.message; statusEl.style.color='var(--up)'; }
     finally{btn.classList.remove('loading');btn.querySelector('.txt').textContent='实时查询';btn.disabled=false;}
@@ -572,7 +650,7 @@ btn.addEventListener('click', async ()=>{
   statusEl.textContent = '正在抓取实时行情并重新筛选…';
   statusEl.style.color = 'var(--text-2)';
   try{
-    const r = await fetch('/api/scan?exit=mid');
+    const r = await fetch(withShare('/api/scan?exit=mid'), {cache:'no-store'});
     const live = await r.json();
     if(!r.ok || live.error) throw new Error(live.error || ('HTTP '+r.status));
     DATA.quote = live.quote;
@@ -599,6 +677,7 @@ if(STATIC_MODE){
 }
 renderBacktest();
 renderLive();
+if(MARKET==='us') refreshUsSnapshot(true);
 </script>
 </body>
 </html>

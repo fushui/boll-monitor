@@ -536,55 +536,30 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
 
-/* GitHub Pages 不能运行 Python 后端；这里用腾讯 ifzq 公开美股接口做盘中/盘前/盘后实时刷新。
-   仅更新价格/涨跌幅/盘前价/盘后价，BOLL 下轨、RSI 等日线指标沿用最近一次完整扫描。
-   用 <script> 标签（JSONP `_var` 变量赋值模式）加载，规避部分预览环境的 CSP connect-src 限制。
-   注意：qt.gtimg.cn 的 ~ 分隔串里 qt[67] 是成交均价而非盘后价；盘前/盘后价须取 pandata 字段（tag=before/after）。 */
-const US_EXCHANGE_SUFFIX = {'NASDAQ':'.OQ','NYSE':'.N','AMEX':'.A'};
+/* GitHub Pages 不能运行 Python 后端；用允许跨域读取的腾讯报价接口刷新美股现价。
+   仅更新价格/涨跌幅，BOLL 下轨、RSI 等日线指标沿用最近一次完整扫描。
+   盘前/盘后报价不从日线快照或成交均价推算，避免把错误字段冒充扩展时段价格。 */
 
-function fetchUsIfzqQuote(item){
+async function fetchUsIfzqQuote(item){
   const code = String(item.code).toUpperCase();
-  const suffix = US_EXCHANGE_SUFFIX[item.exchange] || '.OQ';
-  const sym = 'us'+code+suffix;
-  const varname = '_usq'+code;
-  return new Promise((resolve, reject)=>{
-    const script = document.createElement('script');
-    let settled = false;
-    const cleanup = ()=>{
-      script.onload = script.onerror = null;
-      if(script.parentNode) script.parentNode.removeChild(script);
-      try{ delete window[varname]; }catch(e){ window[varname] = undefined; }
-    };
-    const finish = (fn, val)=>{ if(settled) return; settled = true; clearTimeout(timer); cleanup(); fn(val); };
-    const timer = setTimeout(()=>finish(reject, new Error(code+' 超时')), 12000);
-    script.src = 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param='+sym+',day,,,1,qfq&_var='+varname+'&_='+Date.now();
-    script.onload = ()=>{
-      try{
-        const raw = window[varname];
-        const node = raw && raw.data && raw.data[sym];
-        if(!node){ finish(reject, new Error(code+' 无数据')); return; }
-        const qt = (node.qt && node.qt[sym]) || [];
-        const pd = node.pandata || {};
-        const price = Number(qt[3]);
-        const out = {
-          price: (Number.isFinite(price)&&price>0)? price : null,
-          change_pct: Number(qt[32])||0, change_amount: Number(qt[31])||0,
-          pre_market_price:null, pre_market_pct:null,
-          after_hours_price:null, after_hours_pct:null, stale:false
-        };
-        const sessLast = Number(pd.last);
-        if(Number.isFinite(sessLast) && sessLast>0){
-          const tag = String(pd.tag||'').toLowerCase();
-          const pct = (Number.isFinite(Number(pd.pct)) && pd.pct!=='' && pd.pct!=null) ? Number(pd.pct) : null;
-          if(tag==='before'){ out.pre_market_price=sessLast; out.pre_market_pct=pct; }
-          else if(tag==='after'){ out.after_hours_price=sessLast; out.after_hours_pct=pct; }
-        }
-        finish(resolve, out);
-      }catch(e){ finish(reject, e); }
-    };
-    script.onerror = ()=>finish(reject, new Error(code+' 请求失败'));
-    document.head.appendChild(script);
-  });
+  const sym = 'us'+code;
+  const url = 'https://qt.gtimg.cn/q='+sym+'&fmt=json&_='+Date.now();
+  const response = await fetch(url, {cache:'no-store'});
+  if(!response.ok) throw new Error(code+' 行情请求失败（HTTP '+response.status+'）');
+  const payload = await response.json();
+  const fields = payload[sym];
+  if(!Array.isArray(fields) || fields.length < 35) throw new Error(code+' 无有效行情');
+  const price = Number(fields[3]);
+  const previousClose = Number(fields[4]);
+  if(!Number.isFinite(price) || price <= 0) throw new Error(code+' 最新价格无效');
+  return {
+    price,
+    change_pct:Number(fields[32])||0,
+    change_amount:Number(fields[31])||0,
+    pre_market_price:null, pre_market_pct:null,
+    after_hours_price:null, after_hours_pct:null,
+    quote_time:String(fields[30]||''), stale:!previousClose
+  };
 }
 
 function applyRealtimeQuotes(quotes){
@@ -632,7 +607,8 @@ btn.addEventListener('click', async ()=>{
     DATA.generated_at = new Date().toLocaleString('zh-CN',{hour12:false});
     renderLive();
     renderSession();
-    statusEl.textContent = '实时行情更新成功（'+okCount+' 只）· '+DATA.generated_at;
+    const quoteTime = Object.values(quotes).map(q=>q.quote_time).find(Boolean);
+    statusEl.textContent = '腾讯实时行情更新成功（'+okCount+' 只）'+(quoteTime?' · 行情时间 '+quoteTime:' · '+DATA.generated_at);
     statusEl.style.color = 'var(--down)';
   }catch(e){
     statusEl.textContent = '实时查询失败：'+e.message;

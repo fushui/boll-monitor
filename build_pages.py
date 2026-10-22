@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import html as html_escape
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -44,6 +45,7 @@ def build_data() -> dict:
             "vol_ratio": _number(row.get("realtime_volume_ratio")),
             "pe": _number(row.get("realtime_pe_ttm")),
             "pb": _number(row.get("realtime_pb")),
+            "dividend_yield": _number(row.get("realtime_dividend_yield")),
             "high": _number(row.get("realtime_high")),
             "low": _number(row.get("realtime_low")),
             "amplitude": _number(row.get("realtime_amplitude_pct")),
@@ -65,6 +67,7 @@ def build_data() -> dict:
             "sell_target": _number(row["selected_sell_target"]),
             "realtime_price": _number(row.get("realtime_price")),
             "change_pct": _number(row.get("realtime_change_pct")) or 0.0,
+            "dividend_yield": _number(row.get("realtime_dividend_yield")),
             "below_lower": _truth(row.get("realtime_below_lower")),
             "at_or_below_buy": _truth(row.get("realtime_at_or_below_buy_limit")),
             "penetration": _number(float(row["lower_penetration"]) * 100),
@@ -105,10 +108,29 @@ def main() -> None:
     data = build_data()
     template = (ROOT / "_dashboard_template.html").read_text(encoding="utf-8")
     html = template.replace("__DASHBOARD_DATA__", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
-    html = html.replace("__STATIC_MODE__", "true").replace("__MARKET__", "cn")
+    html = html.replace("__MARKET__", "cn")
     DOCS.mkdir(exist_ok=True)
-    (DOCS / "index.html").write_text(html, encoding="utf-8")
+    (DOCS / "index.html").write_text(html.replace("__STATIC_MODE__", "true"), encoding="utf-8")
+    # 本地 server.py 直接读取该文件，确保本地页面与 GitHub Pages 使用同一份数据。
+    (OUTPUT / "dashboard.html").write_text(html.replace("__STATIC_MODE__", "false"), encoding="utf-8")
     (DOCS / ".nojekyll").write_text("", encoding="utf-8")
+    etf_path = OUTPUT / "etf_momentum.json"
+    if etf_path.exists():
+        etf_data = json.loads(etf_path.read_text(encoding="utf-8"))
+    else:
+        etf_data = {"action": "CASH", "reason": "尚未生成数据，请先运行 python -m etf_momentum.scan", "ranked": [], "errors": [], "backtest": {"available": False}}
+    etf_template = (ROOT / "_etf_momentum_template.html").read_text(encoding="utf-8")
+    etf_pool = pd.read_csv(ROOT / "data" / "etf_pool.csv", dtype=str).fillna("")
+    options = "".join(
+        f'<option value="{html_escape.escape(row.code, quote=True)}">{html_escape.escape(row.name)} {html_escape.escape(row.code)}</option>'
+        for row in etf_pool.itertuples(index=False)
+    )
+    etf_template = etf_template.replace("__ETF_OPTIONS__", options)
+    etf_html = etf_template.replace("__ETF_DATA__", json.dumps(etf_data, ensure_ascii=False, separators=(",", ":")))
+    (DOCS / "etf").mkdir(parents=True, exist_ok=True)
+    (OUTPUT / "etf").mkdir(parents=True, exist_ok=True)
+    (DOCS / "etf" / "index.html").write_text(etf_html.replace("__STATIC_MODE__", "true"), encoding="utf-8")
+    (OUTPUT / "etf" / "dashboard.html").write_text(etf_html.replace("__STATIC_MODE__", "false"), encoding="utf-8")
     print(f"GitHub Pages built: {DOCS / 'index.html'}")
 
 
