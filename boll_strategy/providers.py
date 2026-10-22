@@ -182,7 +182,41 @@ class AStockDataProvider:
         missing = [code for code in codes if code not in result]
         if missing:
             raise RuntimeError(f"腾讯实时行情缺失 {len(missing)} 只: {', '.join(missing[:5])}")
+        # 东财分红明细用于计算近12个月股息率；行情主源不可用时不影响实时行情返回。
+        try:
+            yields = self._dividend_yields(codes, result)
+            for code, value in yields.items():
+                result[code]["realtime_dividend_yield"] = value
+        except Exception:
+            pass
         return result
+
+    def _dividend_yields(self, codes: list[str], quotes: dict[str, dict]) -> dict[str, float | None]:
+        """东财分红明细：近12个月税前现金分红/当前价，返回百分比。"""
+        raw_codes = [re.search(r"(\d{6})$", str(c)).group(1) for c in codes]
+        q = chr(34)
+        code_filter = "(SECURITY_CODE in (" + ",".join(q + c + q for c in raw_codes) + "))"
+        params = {"reportName": "RPT_SHAREBONUS_DET", "columns": "SECURITY_CODE,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE", "filter": code_filter, "pageNumber": "1", "pageSize": "500", "sortColumns": "EX_DIVIDEND_DATE", "sortTypes": "-1", "source": "WEB", "client": "WEB"}
+        response = self.session.get("https://datacenter.eastmoney.com/securities/api/data/v1/get", params=params, timeout=self.timeout)
+        response.raise_for_status()
+        rows = (response.json().get("result") or {}).get("data") or []
+        cutoff = date.today() - timedelta(days=366)
+        totals = {c: 0.0 for c in raw_codes}
+        for row in rows:
+            try:
+                code = str(row.get("SECURITY_CODE", ""))
+                ex_date = date.fromisoformat(str(row.get("EX_DIVIDEND_DATE", ""))[:10])
+                if code in totals and ex_date >= cutoff:
+                    # 东财该字段按“每10股派息”披露。
+                    totals[code] += float(row.get("PRETAX_BONUS_RMB") or 0) / 10.0
+            except (TypeError, ValueError):
+                continue
+        out = {}
+        for code in codes:
+            raw = re.search(r"(\d{6})$", str(code)).group(1)
+            price = float(quotes[code].get("realtime_price") or 0)
+            out[code] = round(totals[raw] / price * 100, 2) if price > 0 and totals[raw] > 0 else None
+        return out
 
     def _wait_for_rate_limit(self) -> None:
         remaining = self.interval - (time.monotonic() - self._last_request_at)
