@@ -44,6 +44,7 @@ def build_data() -> dict:
             "vol_ratio": _number(row.get("realtime_volume_ratio")),
             "pe": _number(row.get("realtime_pe_ttm")),
             "pb": _number(row.get("realtime_pb")),
+            "dividend_yield": _number(row.get("realtime_dividend_yield")),
             "high": _number(row.get("realtime_high")),
             "low": _number(row.get("realtime_low")),
             "amplitude": _number(row.get("realtime_amplitude_pct")),
