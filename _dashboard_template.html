@@ -403,6 +403,7 @@ function renderCandidates(){
         row('买入限价', c.buy_limit.toFixed(2))+
         row('卖出目标(中轨)', c.sell_target.toFixed(2))+
         row('RSI(14)', c.rsi.toFixed(1))+
+        row('股息率', c.dividend_yield==null?'—':c.dividend_yield.toFixed(2)+'%')+
       '</div>'+
       '<div class="cand-rows" style="border-top:1px solid var(--border-soft);padding-top:10px">'+
         row('实时价', c.realtime_price.toFixed(2))+
