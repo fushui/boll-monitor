@@ -242,6 +242,7 @@
               <th data-key="turnover">换手 <span class="arr">↕</span></th>
               <th data-key="pe">PE(TTM) <span class="arr">↕</span></th>
               <th data-key="pb">PB <span class="arr">↕</span></th>
+              <th data-key="dividend_yield">股息率 <span class="arr">↕</span></th>
               <th data-key="amplitude">振幅 <span class="arr">↕</span></th>
               <th data-key="mcap_yi">总市值(亿) <span class="arr">↕</span></th>
             </tr>
@@ -455,6 +456,7 @@ function renderQuoteTable(){
       '<td class="num">'+(s.turnover==null?'—':s.turnover.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.pe==null?'—':s.pe.toFixed(1))+'</td>'+
       '<td class="num">'+(s.pb==null?'—':s.pb.toFixed(2))+'</td>'+
+      '<td class="num">'+(s.dividend_yield==null?'—':s.dividend_yield.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.amplitude==null?'—':s.amplitude.toFixed(2)+'%')+'</td>'+
       '<td class="num">'+(s.mcap_yi==null?'—':s.mcap_yi)+'</td>'+
     '</tr>';
