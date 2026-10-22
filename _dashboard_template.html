@@ -488,8 +488,8 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
 const poolBtn = document.getElementById('poolBtn');
-if(STATIC_MODE) poolBtn.style.display='none';
 poolBtn.addEventListener('click', async ()=>{
+  if(STATIC_MODE){ alert('云端页面为静态发布，不能直接写入 GitHub。请修改项目中的 data/stock_pool.csv 后运行云端任务发布。'); return; }
   const action = prompt('输入 add 新增，或 remove 删除');
   if(!action || !['add','remove'].includes(action.trim().toLowerCase())) return;
   const code = prompt('股票代码（例如 SH.600519）'); if(!code) return;
