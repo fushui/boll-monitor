@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 
 
-# 腾讯美股日线接口（公开、免 key）。Yahoo Finance 已对中国大陆屏蔽，
-# 腾讯 ifzq 接口同样提供前复权日线 + 实时/盘前盘后行情，一次请求拿全。
-KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+# Follow global-stock-data: Sina daily bars, Tencent live snapshot.
+SINA_KLINE_URL = "https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var/US_MinKService.getDailyK"
+TENCENT_QUOTE_URL = "https://qt.gtimg.cn"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
 
 # 腾讯美股代码后缀：NASDAQ=.OQ / NYSE=.N / AMEX=.A
@@ -28,7 +28,7 @@ _KNOWN_EXCHANGE = {
     "BRK.B": "NYSE", "JPM": "NYSE", "V": "NYSE", "WMT": "NYSE", "XOM": "NYSE",
 }
 
-# range -> 日线数量（腾讯接口按“最近 N 根”返回）
+# range -> approximate daily bar count
 _RANGE_COUNT = {"1y": 320, "2y": 640, "3y": 1000, "5y": 1600}
 
 
@@ -47,76 +47,64 @@ def _to_float(value) -> float | None:
 
 
 def fetch_history(symbol: str, range_: str = "3y") -> tuple[pd.DataFrame, dict]:
-    """下载日线、实时价与盘前盘后行情（腾讯公开接口，非官方、无可用性保证）。"""
-    tcode = _tencent_code(symbol)
+    """Fetch Sina daily OHLCV and a Tencent live quote (public, unofficial sources)."""
+    sym = symbol.strip().upper()
     count = _RANGE_COUNT.get(range_, 1000)
-    query = urllib.parse.urlencode({"param": f"{tcode},day,,,{count},qfq"})
-    request = urllib.request.Request(
-        f"{KLINE_URL}?{query}",
-        headers={"User-Agent": USER_AGENT, "Referer": "https://gu.qq.com/"},
+    response = requests.get(
+        SINA_KLINE_URL,
+        params={"symbol": sym, "num": count},
+        headers={"User-Agent": USER_AGENT, "Referer": "https://finance.sina.com.cn/"},
+        timeout=20,
     )
-    with urllib.request.urlopen(request, timeout=25) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-
-    data = (payload.get("data") or {}).get(tcode)
-    if not data or not data.get("day"):
-        raise ValueError(f"{symbol}: 腾讯返回空日线（代码 {tcode}）")
-
-    rows = []
-    for item in data["day"]:
-        # 腾讯字段顺序：[date, open, close, high, low, volume]
-        if len(item) < 6:
-            continue
-        rows.append({
-            "date": item[0],
-            "open": _to_float(item[1]),
-            "close": _to_float(item[2]),
-            "high": _to_float(item[3]),
-            "low": _to_float(item[4]),
-            "volume": _to_float(item[5]),
-        })
+    response.raise_for_status()
+    match = re.search(r"\((\[.*\])\)", response.text, flags=re.S)
+    if not match:
+        raise ValueError(f"{sym}: 新浪返回空日线或格式无法识别")
+    items = json.loads(match.group(1))
+    rows = [{
+        "date": item.get("d"),
+        "open": _to_float(item.get("o")),
+        "high": _to_float(item.get("h")),
+        "low": _to_float(item.get("l")),
+        "close": _to_float(item.get("c")),
+        "volume": _to_float(item.get("v")),
+    } for item in items]
     frame = pd.DataFrame(rows).dropna(subset=["open", "high", "low", "close", "volume"])
     if frame.empty:
-        raise ValueError(f"{symbol}: 无有效日线")
+        raise ValueError(f"{sym}: 新浪无有效日线")
+    # Sina may return the full available history even when num is supplied.
+    # Enforce the selected period locally so backtests honor the requested range.
+    frame = frame.tail(count).reset_index(drop=True)
 
-    # 实时行情来自 qt（{code: [...]} 嵌套结构）；盘前/盘后行情来自 pandata。
-    # 注意：qt[67] 是「成交均价 = 成交额 / 成交量」，并非盘后价，勿误用。
-    qt_node = data.get("qt") or {}
-    qt = qt_node.get(tcode) if isinstance(qt_node, dict) else qt_node
+    # Skill's Tencent US quote endpoint returns JSON when fmt=json is set.
+    quote_response = requests.get(
+        TENCENT_QUOTE_URL,
+        params={"q": f"us{sym}", "fmt": "json"},
+        headers={"User-Agent": USER_AGENT, "Referer": "https://gu.qq.com/"},
+        timeout=12,
+    )
+    quote_response.raise_for_status()
+    quote_payload = quote_response.json()
+    qt = quote_payload.get(f"us{sym}", [])
     if not isinstance(qt, list):
         qt = []
     regular_price = _to_float(qt[3]) if len(qt) > 3 else None
     previous_close = _to_float(qt[4]) if len(qt) > 4 else None
     quote_time = qt[30] if len(qt) > 30 else ""
 
-    # pandata 仅在盘前/盘后时段有值：tag="before"=盘前，tag="after"=盘后，
-    # 常规交易时段/休市时 tag 为空、last=-1。
-    pandata = data.get("pandata") or {}
-    session_tag = str(pandata.get("tag", "") or "").strip().lower()
-    session_last = _to_float(pandata.get("last"))
-    session_pct = _to_float(pandata.get("pct"))
-    session_time = pandata.get("time", "") or ""
-    pre_market_price = pre_market_pct = pre_market_time = None
-    after_hours_price = after_hours_pct = after_hours_time = None
-    if session_last and session_last > 0:
-        if session_tag == "before":
-            pre_market_price, pre_market_pct, pre_market_time = session_last, session_pct, session_time
-        elif session_tag == "after":
-            after_hours_price, after_hours_pct, after_hours_time = session_last, session_pct, session_time
-
     meta_out = {
-        "symbol": symbol.upper(),
+        "symbol": sym,
         "currency": "USD",
-        "exchange": _KNOWN_EXCHANGE.get(symbol.upper(), "NASDAQ"),
+        "exchange": _KNOWN_EXCHANGE.get(sym, "NASDAQ"),
         "regular_market_price": regular_price,
         "previous_close": previous_close,
-        "pre_market_price": pre_market_price,
-        "pre_market_pct": pre_market_pct,
-        "pre_market_time": pre_market_time,
-        "after_hours_price": after_hours_price,
-        "after_hours_pct": after_hours_pct,
-        "after_hours_time": after_hours_time,
-        "session": session_tag,
+        "pre_market_price": None,
+        "pre_market_pct": None,
+        "pre_market_time": None,
+        "after_hours_price": None,
+        "after_hours_pct": None,
+        "after_hours_time": None,
+        "session": "",
         "quote_timestamp": quote_time,
         "market_timezone": "America/New_York",
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

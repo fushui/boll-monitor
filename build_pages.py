@@ -115,10 +115,10 @@ def main() -> None:
     (OUTPUT / "dashboard.html").write_text(html.replace("__STATIC_MODE__", "false"), encoding="utf-8")
     (DOCS / ".nojekyll").write_text("", encoding="utf-8")
     etf_path = OUTPUT / "etf_momentum.json"
-    if etf_path.exists():
-        etf_data = json.loads(etf_path.read_text(encoding="utf-8"))
-    else:
-        etf_data = {"action": "CASH", "reason": "尚未生成数据，请先运行 python -m etf_momentum.scan", "ranked": [], "errors": [], "backtest": {"available": False}}
+    etf_data = json.loads(etf_path.read_text(encoding="utf-8")) if etf_path.exists() else {
+        "action": "CASH", "reason": "尚未生成数据，请先运行 python -m etf_momentum.scan",
+        "ranked": [], "errors": [], "backtest": {"available": False},
+    }
     etf_template = (ROOT / "_etf_momentum_template.html").read_text(encoding="utf-8")
     etf_pool = pd.read_csv(ROOT / "data" / "etf_pool.csv", dtype=str).fillna("")
     options = "".join(

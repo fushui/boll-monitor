@@ -47,7 +47,7 @@ _lock = threading.Lock()
 
 
 def _resolve_stock_input(value: str) -> tuple[str, str]:
-    """Resolve A-share code or Chinese name through Tencent Smartbox."""
+    """Resolve an A-share code or name through Tencent Smartbox."""
     value = value.strip()
     match = re.fullmatch(r"(?:(SH|SZ)\.)?(\d{6})", value.upper())
     if match:
@@ -60,42 +60,32 @@ def _resolve_stock_input(value: str) -> tuple[str, str]:
             else:
                 raise ValueError("暂不支持该市场代码，请使用 SH.600519 或 SZ.000001 格式")
         code = f"{market}.{digits}"
-        name = _tencent_stock_name(code)
-        return code, name
-
-    response = requests.get(
-        "https://smartbox.gtimg.cn/s3/",
-        params={"q": value, "t": "all"},
-        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-        timeout=12,
-    )
+        return code, _tencent_stock_name(code)
+    response = requests.get("https://smartbox.gtimg.cn/s3/", params={"q": value, "t": "all"},
+                            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}, timeout=12)
     response.raise_for_status()
     hint = re.search(r'v_hint="([^"]*)"', response.content.decode("gbk", errors="replace"))
     if not hint:
         raise ValueError(f"没有找到股票：{value}")
     records = []
     for item in json.loads('"' + hint.group(1) + '"').split("^"):
-        parts = item.split("~")
-        if len(parts) >= 5 and parts[0] in ("sh", "sz") and parts[1].isdigit() and len(parts[1]) == 6 and parts[4].startswith("GP"):
-            records.append((parts[0].upper() + "." + parts[1], parts[2]))
-    if not records:
-        raise ValueError(f"没有找到沪深 A 股：{value}")
-    exact = [item for item in records if item[1].casefold() == value.casefold()]
+        fields = item.split("~")
+        if len(fields) >= 5 and fields[0] in ("sh", "sz") and fields[1].isdigit() and len(fields[1]) == 6 and fields[4].startswith("GP"):
+            records.append((fields[0].upper() + "." + fields[1], fields[2]))
+    records = list(dict.fromkeys(records))
+    exact = [row for row in records if row[1].casefold() == value.casefold()]
     matches = exact or records
-    unique = list(dict.fromkeys(matches))
-    if len(unique) != 1:
-        options = "、".join(f"{name}({code})" for code, name in unique[:5])
-        raise ValueError(f"名称匹配到多只股票，请输入代码。匹配结果：{options}")
-    return unique[0]
+    if len(matches) != 1:
+        if not matches:
+            raise ValueError(f"没有找到沪深 A 股：{value}")
+        raise ValueError("名称匹配到多只股票，请输入代码：" + "、".join(f"{name}({code})" for code, name in matches[:5]))
+    return matches[0]
 
 
 def _tencent_stock_name(code: str) -> str:
     market, digits = code.lower().split(".", 1)
-    response = requests.get(
-        f"https://qt.gtimg.cn/q={market}{digits}",
-        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-        timeout=10,
-    )
+    response = requests.get(f"https://qt.gtimg.cn/q={market}{digits}",
+                            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}, timeout=10)
     response.raise_for_status()
     match = re.search(r'="([^"]*)"', response.content.decode("gbk", errors="replace"))
     fields = match.group(1).split("~") if match else []
@@ -221,19 +211,6 @@ def _run_scan(exit_line: str) -> dict:
     stocks = [_build_stock(r) for r in results]
     stocks.sort(key=lambda x: -x["change_pct"])
 
-    # 全部股票都失败时，绝不返回空列表（否则前端会把股票池列表清空），
-    # 而是返回明确错误，让前端保留旧列表并提示查询失败。
-    if not results:
-        first = errors[0] if errors else {"code": "UNKNOWN", "error": "未知错误"}
-        return {
-            "ok": False,
-            "error": f"行情源不可用：全部 {len(codes)} 只股票查询失败"
-                     f"（首例 {first.get('code')} {first.get('error')}）",
-            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "elapsed": elapsed,
-            "errors": len(errors),
-        }
-
     return {
         "ok": True,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -309,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length) or b"{}")
                 action = body.get("action")
                 value = str(body.get("input", body.get("code", ""))).strip()
+                code = value.upper()
+                name = str(body.get("name", "")).strip() or code
                 pool_path = ROOT / "data" / "stock_pool.csv"
                 pool = load_universe(pool_path)
                 if action == "add":
@@ -320,7 +299,6 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         raise ValueError(f"{name}（{code}）已在股票池中")
                 elif action == "remove":
-                    code = value.strip().upper()
                     pool = pool[pool["code"] != code].copy()
                     if pool.empty: raise ValueError("股票池不能全部删除")
                 else:
@@ -375,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
             if US_DASHBOARD.exists():
                 self._send_html(US_DASHBOARD)
             else:
-                self._send_json({"ok": False, "error": "美股 dashboard 不存在"})
+                self._send_json({"ok": False, "error": "美股 dashboard 不存在，请先运行美股页面构建脚本"}, status=404)
             return
 
         if path in ("/etf", "/etf/"):
@@ -390,8 +368,8 @@ class Handler(BaseHTTPRequestHandler):
                         for row in csv.DictReader(file)
                     )
                 template = template.replace("__ETF_OPTIONS__", options)
-                html = template.replace("__ETF_DATA__", json.dumps(empty, ensure_ascii=False)).replace("__STATIC_MODE__", "false")
-                body = html.encode("utf-8")
+                page = template.replace("__ETF_DATA__", json.dumps(empty, ensure_ascii=False)).replace("__STATIC_MODE__", "false")
+                body = page.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))

@@ -6,8 +6,6 @@
 <title>BOLL 策略监控台</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 <style>
-.pool-spinner{display:inline-block;width:12px;height:12px;margin-right:6px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:pool-spin .7s linear infinite}
-@keyframes pool-spin{to{transform:rotate(360deg)}}
   :root{
     --bg:#0b0e14;
     --bg-2:#0e1219;
@@ -25,6 +23,8 @@
     --orange:#f97316;
     --violet:#8b5cf6;
   }
+  .pool-spinner{display:inline-block;width:12px;height:12px;margin-right:6px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:pool-spin .7s linear infinite}
+  @keyframes pool-spin{to{transform:rotate(360deg)}}
   *{box-sizing:border-box;margin:0;padding:0}
   body{
     background:var(--bg);
@@ -170,7 +170,7 @@
     </div>
   </div>
   <div class="header-right">
-    <a href="etf/" style="color:var(--accent);text-decoration:none;font-size:13px">ETF 动量轮动 ↗</a>
+    <a href="etf/" style="color:var(--gold);text-decoration:none;font-size:13px">ETF 动量轮动 ↗</a>
     <button class="btn-refresh" id="refreshBtn">
       <span class="spinner"></span>
       <span class="ic">⟳</span>
@@ -233,7 +233,7 @@
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
         <div><h2>今日行情</h2><div class="desc">点击表头排序 · 共 <span id="quoteCount"></span> 只</div></div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input id="poolInput" type="text" placeholder="输入股票代码或名称" style="background:var(--card-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;width:200px">
+          <input id="poolInput" type="text" placeholder="输入股票名称或代码" style="background:var(--card-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font:inherit;width:200px">
           <button class="btn-refresh" id="addStockBtn" style="padding:8px 12px">确定新增</button>
         </div>
       </div>
@@ -269,13 +269,6 @@
 const DATA = __DASHBOARD_DATA__;
 const STATIC_MODE = __STATIC_MODE__;
 const MARKET = '__MARKET__';
-
-// WorkBuddy 分享链接以 sharecode 鉴权，后端 API 请求须携带该参数（否则 403「链接不完整」）
-function withShare(path){
-  const m = location.search.match(/[?&]sharecode=([^&#]+)/);
-  if(!m) return path;
-  return path + (path.includes('?') ? '&' : '?') + 'sharecode=' + encodeURIComponent(m[1]);
-}
 
 const AXIS = '#5b6474', SPLIT = 'rgba(255,255,255,0.05)', TIP_BG = '#1a2130';
 function tooltipStyle(){
@@ -504,43 +497,27 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
-const poolInput=document.getElementById('poolInput');
-const addStockBtn=document.getElementById('addStockBtn');
+const poolInput=document.getElementById('poolInput'), addStockBtn=document.getElementById('addStockBtn');
 if(STATIC_MODE){poolInput.disabled=true;addStockBtn.disabled=true;poolInput.placeholder='云端静态页请在项目股票池文件中修改';}
 let poolBusy=false;
+function withShare(path){const m=location.search.match(/[?&]sharecode=([^&#]+)/);return m?path+(path.includes('?')?'&':'?')+'sharecode='+encodeURIComponent(m[1]):path;}
 function setPoolLoading(loading,action,trigger){
-  poolBusy=loading;
-  addStockBtn.disabled=loading||STATIC_MODE;
-  poolInput.disabled=loading||STATIC_MODE;
+  poolBusy=loading;addStockBtn.disabled=loading||STATIC_MODE;poolInput.disabled=loading||STATIC_MODE;
   document.querySelectorAll('.remove-stock').forEach(button=>button.disabled=loading);
-  if(loading&&trigger){
-    trigger.dataset.originalText=trigger.textContent;
-    trigger.innerHTML='<span class="pool-spinner" aria-hidden="true"></span>处理中…';
-    trigger.disabled=true;
-  }else if(trigger){
-    trigger.textContent=trigger.dataset.originalText||(action==='add'?'确定新增':'删除');
-    delete trigger.dataset.originalText;
-    trigger.disabled=false;
-  }
+  if(trigger){if(loading){trigger.dataset.oldText=trigger.textContent;trigger.innerHTML='<span class="pool-spinner" aria-hidden="true"></span>处理中…';trigger.disabled=true;}
+    else{trigger.textContent=trigger.dataset.oldText||(action==='add'?'确定新增':'删除');delete trigger.dataset.oldText;trigger.disabled=false;}}
 }
 async function changePool(action,value,trigger=addStockBtn){
-  if(STATIC_MODE){statusEl.textContent='云端静态页面不能保存股票池修改，请在项目 data/stock_pool.csv 中编辑。';statusEl.style.color='var(--up)';return;}
-  if(poolBusy)return;
-  if(action==='remove'&&!confirm('从股票池删除 '+value+'？')) return;
+  if(STATIC_MODE){statusEl.textContent='云端静态页面不能保存股票池修改，请编辑 data/stock_pool.csv 后重新发布。';statusEl.style.color='var(--up)';return;}
+  if(poolBusy)return;if(action==='remove'&&!confirm('从股票池删除 '+value+'？'))return;
   setPoolLoading(true,action,trigger);statusEl.textContent=action==='add'?'正在新增并刷新股票数据…':'正在删除并刷新股票数据…';statusEl.style.color='var(--text-2)';
   try{
     const r=await fetch(withShare('/api/pool'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,input:value})});
     const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'股票池更新失败');
-    const scan=await fetch(withShare('/api/scan?exit=mid'),{cache:'no-store'});const live=await scan.json();
-    if(scan.ok&&live.ok&&live.quote?.total){
-      DATA.quote=live.quote;DATA.candidates=live.candidates;DATA.near=live.near||[];DATA.generated_at=live.generated_at;
-      statusEl.textContent='股票池已更新（'+d.total+' 只）· 行情与信号刷新完成 '+live.generated_at;statusEl.style.color='var(--down)';
-    }else{
-      const qr=await fetch(withShare('/api/quote'),{cache:'no-store'});const q=await qr.json();if(!qr.ok||!q.ok||!q.quote?.total)throw new Error('股票池已保存，但行情源暂不可用');
-      const active=new Set(q.quote.stocks.map(s=>s.code));DATA.quote=q.quote;DATA.candidates=DATA.candidates.filter(c=>active.has(c.code));DATA.near=(DATA.near||[]).filter(n=>active.has(n.code));DATA.generated_at=q.generated_at;
-      statusEl.textContent='股票池已更新（'+d.total+' 只）· 行情已刷新，部分日线信号暂不可用';statusEl.style.color='var(--down)';
-    }
-    renderLive();
+    const sr=await fetch(withShare('/api/scan?exit=mid'),{cache:'no-store'}), scan=await sr.json();
+    if(!sr.ok||!scan.ok||!scan.quote?.total)throw new Error(scan.error||'股票池已保存，但行情刷新失败');
+    DATA.quote=scan.quote;DATA.candidates=scan.candidates;DATA.near=scan.near||[];DATA.generated_at=scan.generated_at;renderLive();
+    statusEl.textContent='股票池已更新（'+d.total+' 只），行情刷新完成 · '+scan.generated_at;statusEl.style.color='var(--down)';
     if(action==='add')poolInput.value='';
   }catch(e){statusEl.textContent='操作失败：'+e.message;statusEl.style.color='var(--up)';}
   finally{setPoolLoading(false,action,trigger);}

@@ -184,7 +184,7 @@
     <div class="meta">
       <div class="date" id="metaDate"></div>
       <div style="display:flex;align-items:center;justify-content:flex-end;margin-top:3px"><span id="sessionBadge"></span></div>
-      <div id="metaStatus">数据源：腾讯 ifzq 美股行情 · 9 只股票池</div>
+  <div id="metaStatus">数据源：新浪日线 + 腾讯实时行情 · 9 只股票池</div>
     </div>
   </div>
 </header>
@@ -590,7 +590,7 @@ btn.addEventListener('click', async ()=>{
   btn.classList.add('loading');
   btn.querySelector('.txt').textContent = '查询中…';
   btn.disabled = true;
-  statusEl.textContent = '正在查询腾讯美股行情（含盘前盘后）…';
+  statusEl.textContent = '正在查询腾讯美股实时行情…';
   statusEl.style.color = 'var(--text-2)';
   try{
     const stocks = DATA.quote.stocks;
@@ -623,7 +623,7 @@ btn.addEventListener('click', async ()=>{
 /* ============ 启动 ============ */
 if(STATIC_MODE){
   btn.querySelector('.txt').textContent = '实时查询';
-  statusEl.textContent = '点击按钮查询腾讯美股最新行情（含盘前盘后）· BOLL 日线信号来自最近扫描';
+    statusEl.textContent = '点击按钮查询腾讯美股最新行情 · BOLL 日线信号来自最近扫描';
 }
 renderBacktest();
 renderLive();
