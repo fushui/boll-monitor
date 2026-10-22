@@ -58,6 +58,7 @@ def _build_stock(row: dict) -> dict:
         "vol_ratio": round(_num(row.get("realtime_volume_ratio")), 2),
         "pe": round(pe, 2) if pe else None,
         "pb": round(pb, 2) if pb else None,
+        "dividend_yield": round(_num(row.get("realtime_dividend_yield")), 2) if row.get("realtime_dividend_yield") is not None else None,
         "high": round(_num(row.get("realtime_high")), 2),
         "low": round(_num(row.get("realtime_low")), 2),
         "amplitude": round(_num(row.get("realtime_amplitude_pct")), 2),
