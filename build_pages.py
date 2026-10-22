@@ -39,6 +39,7 @@ def build_data() -> dict:
             "name": row["name"],
             "price": _number(row.get("realtime_price")),
             "change_pct": _number(row.get("realtime_change_pct")) or 0.0,
+            "dividend_yield": _number(row.get("realtime_dividend_yield")),
             "change_amount": _number(row.get("realtime_change_amount")) or 0.0,
             "turnover": _number(row.get("realtime_turnover_pct")),
             "vol_ratio": _number(row.get("realtime_volume_ratio")),
