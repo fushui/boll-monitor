@@ -24,6 +24,7 @@ from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.parse import unquote
 
 from boll_strategy.cli import _drop_incomplete_today, _merge_realtime
 from boll_strategy.providers import AStockDataProvider
@@ -224,6 +225,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/pool":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                action = body.get("action")
+                code = str(body.get("code", "")).strip().upper()
+                name = str(body.get("name", "")).strip() or code
+                pool_path = ROOT / "data" / "stock_pool.csv"
+                pool = load_universe(pool_path)
+                if action == "add":
+                    if not __import__("re").fullmatch(r"(?:SH|SZ)\.\d{6}", code):
+                        raise ValueError("代码格式应为 SH.600519 或 SZ.000001")
+                    if code not in set(pool["code"]):
+                        pool = __import__("pandas").concat([pool, __import__("pandas").DataFrame([{"code": code, "name": name}])], ignore_index=True)
+                elif action == "remove":
+                    pool = pool[pool["code"] != code].copy()
+                    if pool.empty: raise ValueError("股票池不能全部删除")
+                else:
+                    raise ValueError("action 必须是 add 或 remove")
+                pool.to_csv(pool_path, index=False, encoding="utf-8-sig")
+                self._send_json({"ok": True, "action": action, "total": len(pool), "stocks": pool.to_dict("records")})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
         if path != "/api/scheduled-push":
             self._send_json({"ok": False, "error": "未知路径 " + path}, status=404)
             return
