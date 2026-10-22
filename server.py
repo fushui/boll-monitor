@@ -123,6 +123,7 @@ def _run_scan(exit_line: str) -> dict:
             "sell_target": round(_num(r.get("selected_sell_target")), 2),
             "realtime_price": round(_num(r.get("realtime_price")), 2),
             "change_pct": round(_num(r.get("realtime_change_pct")), 2),
+            "dividend_yield": round(_num(r.get("realtime_dividend_yield")), 2) if r.get("realtime_dividend_yield") is not None else None,
             "below_lower": bool(r.get("realtime_below_lower")),
             "at_or_below_buy": bool(r.get("realtime_at_or_below_buy_limit")),
             "penetration": round(_num(r.get("lower_penetration")) * 100, 2),
