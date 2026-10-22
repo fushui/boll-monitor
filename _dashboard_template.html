@@ -168,6 +168,7 @@
     </div>
   </div>
   <div class="header-right">
+    <button class="btn-refresh" id="poolBtn" style="background:var(--card-2);color:var(--text);border:1px solid var(--border)">管理股票池</button>
     <button class="btn-refresh" id="refreshBtn">
       <span class="spinner"></span>
       <span class="ic">⟳</span>
@@ -486,6 +487,16 @@ document.querySelectorAll('#quoteTable thead th').forEach(th=>{
 
 const btn = document.getElementById('refreshBtn');
 const statusEl = document.getElementById('metaStatus');
+const poolBtn = document.getElementById('poolBtn');
+if(STATIC_MODE) poolBtn.style.display='none';
+poolBtn.addEventListener('click', async ()=>{
+  const action = prompt('输入 add 新增，或 remove 删除');
+  if(!action || !['add','remove'].includes(action.trim().toLowerCase())) return;
+  const code = prompt('股票代码（例如 SH.600519）'); if(!code) return;
+  const name = action.trim().toLowerCase()==='add' ? (prompt('股票名称')||code) : code;
+  const r=await fetch('/api/pool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action.trim().toLowerCase(),code,name})});
+  const d=await r.json(); if(!r.ok||!d.ok){alert(d.error||'股票池更新失败');return;} alert('股票池已更新，共 '+d.total+' 只。点击实时查询重新扫描。');
+});
 
 async function refreshUsSnapshot(silent=false){
   if(MARKET!=='us') return;
