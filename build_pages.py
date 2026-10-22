@@ -110,6 +110,8 @@ def main() -> None:
     html = html.replace("__STATIC_MODE__", "true").replace("__MARKET__", "cn")
     DOCS.mkdir(exist_ok=True)
     (DOCS / "index.html").write_text(html, encoding="utf-8")
+    # 本地 server.py 直接读取该文件，确保本地页面与 GitHub Pages 使用同一份数据。
+    (OUTPUT / "dashboard.html").write_text(html, encoding="utf-8")
     (DOCS / ".nojekyll").write_text("", encoding="utf-8")
     print(f"GitHub Pages built: {DOCS / 'index.html'}")
 
